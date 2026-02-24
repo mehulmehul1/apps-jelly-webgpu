@@ -290,6 +290,7 @@ export class JellyfishMaterialTestScene {
   // State
   private config: MaterialTestConfig;
   private isRunning = false;
+  private isBuilderPreviewActive = false;
   private physicsTimestep = 1000 / 30;
   private lastFrameTime = performance.now();
   private physicsTickCount = 0;
@@ -605,10 +606,16 @@ export class JellyfishMaterialTestScene {
    * Toggles the visibility of the internal debug UI
    */
   public setUIVisibility(visible: boolean): void {
+    this.isBuilderPreviewActive = !visible;
+
     if (this.fpsCounter) this.fpsCounter.setVisible(visible);
     if (this.stepOverlay) this.stepOverlay.setVisible(visible);
     if (this.materialInfo) this.materialInfo.setVisible(visible);
     if (this.creatureMenu) this.creatureMenu.setVisible(visible);
+
+    if (this.orbitControls) {
+      this.orbitControls.autoRotate = visible && (this.config.autoRotate ?? true);
+    }
 
     if (this.editor) {
       const editorContainer = document.querySelector('.tp-dfwv');
@@ -1232,8 +1239,10 @@ export class JellyfishMaterialTestScene {
       unit.bulbMaterial.setTime(time);
     }
 
-    for (const mat of this.customMaterials) {
-      mat.setTime(time);
+    if (!this.isBuilderPreviewActive) {
+      for (const mat of this.customMaterials) {
+        mat.setTime(time);
+      }
     }
 
     // Update dust time
@@ -1252,7 +1261,7 @@ export class JellyfishMaterialTestScene {
     }
 
     for (const mat of this.customMaterials) {
-      mat.setStepProgress(stepProgress);
+      mat.setStepProgress(this.isBuilderPreviewActive ? 1 : stepProgress);
     }
   }
 
@@ -1347,11 +1356,13 @@ export class JellyfishMaterialTestScene {
       unit.geometryData.positionPrev.needsUpdate = true;
     }
 
-    for (const cp of this.customPhysics) {
-      this.updateCustomRibs(cp, this.animTime);
-      cp.system.tick(delta * 0.001);
-      cp.position.needsUpdate = true;
-      cp.positionPrev.needsUpdate = true;
+    if (!this.isBuilderPreviewActive) {
+      for (const cp of this.customPhysics) {
+        this.updateCustomRibs(cp, this.animTime);
+        cp.system.tick(delta * 0.001);
+        cp.position.needsUpdate = true;
+        cp.positionPrev.needsUpdate = true;
+      }
     }
   }
 
