@@ -5,7 +5,7 @@ export type { AttachEmitter } from './AttachEmitters';
 export { resolveTentacleGroups } from './AttachEmitters';
 export type { SpineCurve } from './SpineCurve';
 export { evalSpineOffset } from './SpineCurve';
-export type { CreatureSpecBase, CreatureSpec, JellyfishSpec, FishSpec, AnemoneSpec, JellyfishGeometryConfig } from './CreatureSpec';
+export type { CreatureSpecBase, CreatureSpec, JellyfishSpec, FishSpec, AnemoneSpec, FishFinConfig, JellyfishGeometryConfig } from './CreatureSpec';
 export { DEFAULT_GEOMETRY_CONFIG, resolveGeometryConfig } from './CreatureSpec';
 export type { PresetId, CreaturePreset } from './presets';
 export { PRESETS } from './presets';

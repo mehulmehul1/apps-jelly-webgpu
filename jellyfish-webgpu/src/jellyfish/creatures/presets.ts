@@ -1,12 +1,20 @@
 import { type LookConfig, DEFAULT_LOOK_PRESET } from '../../editor/look-presets';
 import { BodyPlan } from './BodyPlan';
 import type { CreatureSpec } from './CreatureSpec';
+import {
+  mackerelPreset, angelfishPreset,
+  clownfishPreset, pufferPreset, neonTetraPreset, moorishIdolPreset,
+} from '../../creatures/presets/fish-presets';
+import {
+  magnificentPreset, bubbleTipPreset, tubePreset,
+} from '../../creatures/presets/anemone-presets';
 
 export type PresetId =
+  // Jellyfish variants
   | 'combJelly'
   | 'salp'
   | 'siphonophore'
-  | 'anemone'
+  | 'anemoneJelly'
   | 'glassSponge'
   | 'ascidia'
   | 'star'
@@ -14,7 +22,18 @@ export type PresetId =
   | 'discJelly'
   | 'boxJelly'
   | 'seaNettle'
-  | 'lobeJelly';
+  | 'lobeJelly'
+  // Fish presets
+  | 'mackerel'
+  | 'angelfish'
+  | 'clownfish'
+  | 'puffer'
+  | 'neonTetra'
+  | 'moorishIdol'
+  // Anemone presets
+  | 'magnificent'
+  | 'bubbleTip'
+  | 'tube';
 
 export interface CreaturePreset {
   id: PresetId;
@@ -201,9 +220,9 @@ export const PRESETS: Record<PresetId, CreaturePreset> = {
     },
   },
 
-  anemone: {
-    id: 'anemone',
-    name: 'Anemone Crown',
+  anemoneJelly: {
+    id: 'anemoneJelly',
+    name: 'Anemone Jelly (Jellyfish)',
     spec: {
       id: 'anemone',
       archetypeId: 'jellyfish',
@@ -692,4 +711,17 @@ export const PRESETS: Record<PresetId, CreaturePreset> = {
     },
     look: DEFAULT_LOOK_PRESET,
   },
+
+  // ── Fish presets ──────────────────────────────────────────────────────
+  mackerel: mackerelPreset,
+  angelfish: angelfishPreset,
+  clownfish: clownfishPreset,
+  puffer: pufferPreset,
+  neonTetra: neonTetraPreset,
+  moorishIdol: moorishIdolPreset,
+
+  // ── Anemone presets (real AnemoneArchetype) ───────────────────────────
+  magnificent: magnificentPreset,
+  bubbleTip: bubbleTipPreset,
+  tube: tubePreset,
 };

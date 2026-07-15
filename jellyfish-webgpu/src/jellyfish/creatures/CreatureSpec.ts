@@ -182,18 +182,87 @@ export interface JellyfishSpec extends CreatureSpecBase {
   };
 }
 
-// ──────────────────────────────────────────
-// Fish — minimal stub
-// ──────────────────────────────────────────
-export interface FishSpec extends CreatureSpecBase {
-  archetypeId: 'fish';
+// ── Fish-specific types ─────────────────────────────────────────────
+
+export interface FishFinConfig {
+  /** Fin type determines attachment + shape logic */
+  kind: 'dorsal' | 'pectoral' | 'caudal' | 'anal' | 'pelvic';
+  /** Which vertebra (0..1 along body) the fin attaches to */
+  attachmentT: number;
+  /** Fin span (width) */
+  span: number;
+  /** Fin height (protrusion from body) */
+  height: number;
+  /** Along-body extent in vertebra units */
+  length: number;
+  /** Flutter frequency multiplier (1 = same as body undulation) */
+  flutterSpeed?: number;
+  /** Flutter amplitude relative to fin size */
+  flutterAmplitude?: number;
 }
 
 // ──────────────────────────────────────────
-// Anemone — minimal stub
+// Fish — bilateral vertebra topology
+// ──────────────────────────────────────────
+export interface FishSpec extends CreatureSpecBase {
+  archetypeId: 'fish';
+  bodyPlan: BodyPlan.Fish;
+
+  /** Number of vertebra rings along the body spine (20-60) */
+  vertebraCount: number;
+  /** Total body length */
+  bodyLength: number;
+  /** Body width at widest point */
+  bodyWidth: number;
+  /** Body depth (height) at deepest point */
+  bodyDepth: number;
+  /** Radius profile along the body (t=0 head, t=1 tail) */
+  bodyProfile: RadiusProfileCurve;
+  /** Fin attachments */
+  fins: FishFinConfig[];
+  /** Optional spine curvature */
+  spineCurve?: SpineCurve;
+  /** Undulation animation parameters */
+  undulation: {
+    amplitude: number;
+    frequency: number;
+    speed: number;
+    finFlutter: number;
+  };
+}
+
+// ──────────────────────────────────────────
+// Anemone — column + tentacle crown
 // ──────────────────────────────────────────
 export interface AnemoneSpec extends CreatureSpecBase {
   archetypeId: 'anemone';
+  bodyPlan: BodyPlan.Anemone;
+
+  /** Stalk geometry */
+  stalk: {
+    height: number;
+    width: number;
+    segments: number;
+    taper: number; // 0 = column, 1 = cone, negative = bulge
+  };
+  /** Tentacle crown */
+  tentacles: {
+    count: number;
+    length: number;
+    thickness: number;
+    /** Radial arrangement: 'ring' | 'rows' | 'random' */
+    arrangement: 'ring' | 'rows' | 'random';
+    /** Number of rows if arrangement === 'rows' */
+    rows?: number;
+  };
+  /** Sway animation parameters */
+  sway: {
+    amplitude: number;
+    frequency: number;
+    phase: number;
+  };
+  /** Base disc shape */
+  baseShape: 'flat' | 'conical' | 'columnar';
 }
 
 // ──────────────────────────────────────────

@@ -18,10 +18,8 @@
  */
 
 import * as THREE from 'three/webgpu';
-import * as Particulate from 'particulate';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { JellyfishRenderer } from '../jellyfish/JellyfishRenderer';
-import { JellyfishGeometry, JellyfishGeometryData } from '../jellyfish/JellyfishGeometry';
 import { InterpolationSystem } from '../systems/physics-bridge';
 import {
   BulbNodeMaterial,
@@ -30,7 +28,7 @@ import {
   GelNodeMaterial,
   DustNodeMaterial,
   createDustSystem,
-  InterpolatedLineMaterial
+  InterpolatedLineMaterial,
 } from '../jellyfish/materials';
 import { JellyfishPostProcessing, LensDirtEffect } from '../post-processing';
 import { JellyfishLookEditor } from '../editor/JellyfishLookEditor';
@@ -38,13 +36,20 @@ import { LookConfig, DEFAULT_LOOK_PRESET, cloneLookConfig, applyLookPreset } fro
 import {
   PRESETS,
   type PresetId,
-  createCreatureRig,
-  type CreatureRig,
   mutateCreatureSpec,
   type CreatureSpec,
-  type JellyfishSpec,
 } from '../jellyfish/creatures';
 import { CreatureSelectMenu } from '../ui/CreatureSelectMenu';
+import { getArchetype } from '../creatures/archetypes/archetypeRegistry';
+import '../creatures/archetypes/JellyfishArchetype';
+import '../creatures/archetypes/AnemoneArchetype';
+import '../creatures/archetypes/FishArchetype';
+import type {
+  CreatureArchetype,
+  BodyData,
+  PhysicsConfig,
+  SeededRNG,
+} from '../creatures/archetypes/CreatureArchetype';
 
 export interface MaterialTestConfig {
   /** Enable FPS counter */
@@ -71,13 +76,16 @@ type DustSystem = ReturnType<typeof createDustSystem>;
 
 interface UnitRuntime {
   id: string;
-  geometryData: JellyfishGeometryData;
+  geometryData: any;
   group: THREE.Group;
-  bulbMaterial: BulbNodeMaterial;
-  gelMaterial: GelNodeMaterial;
+  bulbMaterial?: BulbNodeMaterial;
+  gelMaterial?: GelNodeMaterial;
   tailMaterial?: TailNodeMaterial;
   mouthMaterial?: TailNodeMaterial;
   tentacleMaterial?: TentacleNodeMaterial;
+  bodyMaterial?: THREE.MeshPhysicalMaterial;
+  stalkMaterial?: THREE.MeshPhysicalMaterial;
+  tentMaterial?: InterpolatedLineMaterial;
 }
 
 /**
@@ -216,6 +224,7 @@ class MaterialInfoPanel {
 }
 
 
+
 /**
  * JellyfishMaterialTestScene - Complete material integration test
  */
@@ -229,12 +238,15 @@ export class JellyfishMaterialTestScene {
   private orbitControls?: OrbitControls;
 
   // Creature components
-  private creatureRig!: CreatureRig;
   private creatureGroup!: THREE.Group;
   private units: UnitRuntime[] = [];
   private creatureMenu?: CreatureSelectMenu;
   private currentPresetId?: PresetId;
   private currentSpec?: CreatureSpec;
+  /** Current world-space focus used by OrbitControls and camera resets. */
+  private creatureFocus = new THREE.Vector3(0, 20, 0);
+  /** Smallest camera distance that fits the currently selected creature. */
+  private minimumCameraDistance = 0;
 
   // Lens dirt for interactions
   private lensDirt?: LensDirtEffect;
@@ -248,8 +260,10 @@ export class JellyfishMaterialTestScene {
   private lookConfig: LookConfig;
   private lastAppliedLook?: LookConfig;
   private autoRotateSpeed = 0.001;
-  private pulseSpeed = 0.5;
-  private pulseAmplitude = 0.15;
+
+  // Archetype dispatch
+  private archetype: CreatureArchetype | null = null;
+  private bodyData: BodyData | null = null;
 
   // Physics
   private interpolation!: InterpolationSystem;
@@ -302,20 +316,38 @@ export class JellyfishMaterialTestScene {
       this.disposeUnits();
     }
 
-    this.creatureRig = createCreatureRig(this.currentSpec);
-    if (this.creatureRig.warnings.length > 0) {
-      console.warn('[CreatureRig] Validation warnings:', this.creatureRig.warnings);
+    // Resolve archetype
+    this.archetype = getArchetype(this.currentSpec.archetypeId) ?? null;
+    if (!this.archetype) {
+      throw new Error(`Unknown archetype: ${this.currentSpec.archetypeId}`);
     }
+
+    // Build body data (geometry + physics)
+    const physicsConfig: PhysicsConfig = { timestep: this.physicsTimestep };
+    const rng: SeededRNG = { random: this.getRng() };
+    this.bodyData = this.archetype.buildBody(this.currentSpec, physicsConfig, rng);
+
+    // Build meshes
+    const matPack = this.archetype.createMaterials(this.lookConfig, this.refractionTarget);
+    this.units = this.archetype.buildMeshes(this.bodyData, matPack, {
+      showConstraints: this.config.showConstraints,
+    }) as unknown as UnitRuntime[];
+
+    // Create group from unit groups
+    this.creatureGroup = new THREE.Group();
+    this.creatureGroup.position.y = 20;
+    for (const unit of this.units) {
+      this.creatureGroup.add(unit.group);
+    }
+
+    this.frameCreature();
 
     // Reset the look to default, then layer preset look, then per-spec look.
     applyLookPreset(this.lookConfig, DEFAULT_LOOK_PRESET);
     applyLookPreset(this.lookConfig, preset.look);
-    if (this.creatureRig.spec.look) {
-      applyLookPreset(this.lookConfig, this.creatureRig.spec.look);
+    if (this.currentSpec.look) {
+      applyLookPreset(this.lookConfig, this.currentSpec.look);
     }
-
-    // Rebuild
-    this.buildCreatureUnits(this.creatureRig);
 
     // Ensure it's in the scene (initialize() will also add it once, but this handles swaps)
     this.scene?.add(this.creatureGroup);
@@ -334,7 +366,7 @@ export class JellyfishMaterialTestScene {
 
     const cs = this.currentSpec.crossSection;
     const topology = this.currentSpec.topology;
-    const colony = this.currentSpec.archetypeId === 'jellyfish' ? (this.currentSpec as JellyfishSpec).colony : undefined;
+    const colony = this.currentSpec.archetypeId === 'jellyfish' ? (this.currentSpec as any).colony : undefined;
 
     fx.features({
       Creature: PRESETS[this.currentPresetId]?.name ?? this.currentPresetId,
@@ -357,11 +389,31 @@ export class JellyfishMaterialTestScene {
       this.disposeUnits();
     }
 
-    this.creatureRig = createCreatureRig(spec);
-    if (this.creatureRig.warnings.length > 0) {
-      console.warn('[CreatureRig] Validation warnings:', this.creatureRig.warnings);
+    // Resolve archetype (keep existing if same archetypeId)
+    const archetype = this.archetype ?? getArchetype(spec.archetypeId);
+    if (!archetype) throw new Error(`Unknown archetype: ${spec.archetypeId}`);
+    this.archetype = archetype;
+
+    // Build body
+    const physicsConfig: PhysicsConfig = { timestep: this.physicsTimestep };
+    const rng: SeededRNG = { random: this.getRng() };
+    this.bodyData = this.archetype.buildBody(spec, physicsConfig, rng);
+
+    // Build meshes
+    const matPack = this.archetype.createMaterials(this.lookConfig, this.refractionTarget);
+    this.units = this.archetype.buildMeshes(this.bodyData, matPack, {
+      showConstraints: this.config.showConstraints,
+    }) as unknown as UnitRuntime[];
+
+    // Re-create group
+    this.creatureGroup = new THREE.Group();
+    this.creatureGroup.position.y = 20;
+    for (const unit of this.units) {
+      this.creatureGroup.add(unit.group);
     }
-    this.buildCreatureUnits(this.creatureRig);
+
+    this.frameCreature();
+
     this.scene?.add(this.creatureGroup);
     this.publishFxFeatures();
   }
@@ -383,17 +435,26 @@ export class JellyfishMaterialTestScene {
 
   public disposeUnits(): void {
     for (const unit of this.units) {
-      unit.bulbMaterial.dispose();
-      unit.gelMaterial.dispose();
-      unit.tailMaterial?.dispose();
-      unit.mouthMaterial?.dispose();
-      unit.tentacleMaterial?.dispose();
+      // Jellyfish units have bulb/gel/tail/mouth/tentacle materials to dispose.
+      // Fish and Anemone use inline MeshPhysicalMaterial — no separate material refs.
+      if (this.archetype?.id === 'jellyfish') {
+        unit.bulbMaterial?.dispose();
+        unit.gelMaterial?.dispose();
+        unit.tailMaterial?.dispose();
+        unit.mouthMaterial?.dispose();
+        unit.tentacleMaterial?.dispose();
+      }
 
       unit.group.traverse((child) => {
         if (child instanceof THREE.Mesh || child instanceof THREE.LineSegments) {
           child.geometry.dispose();
         }
       });
+    }
+    // Clean up archetype-owned physics resources
+    if (this.archetype && this.bodyData) {
+      this.archetype.dispose(this.bodyData);
+      this.bodyData = null;
     }
     this.units = [];
   }
@@ -422,6 +483,35 @@ export class JellyfishMaterialTestScene {
     if (this.editor) {
       const editorContainer = document.querySelector('.tp-dfwv');
       if (editorContainer) (editorContainer as HTMLElement).style.display = visible ? 'block' : 'none';
+    }
+  }
+
+  /**
+   * Keep every archetype in frame after a swap. Jellyfish are centred around
+   * the group origin, while fish and anemones have very different vertical
+   * extents. OrbitControls otherwise continues to look at the world origin.
+   */
+  private frameCreature(): void {
+    this.creatureGroup.updateMatrixWorld(true);
+
+    const bounds = new THREE.Box3().setFromObject(this.creatureGroup);
+    if (bounds.isEmpty()) return;
+
+    bounds.getCenter(this.creatureFocus);
+    const size = bounds.getSize(new THREE.Vector3());
+    const radius = Math.max(size.x, size.y, size.z) * 0.5;
+    const verticalFov = THREE.MathUtils.degToRad(this.camera.fov);
+    const fitDistance = radius > 0
+      ? (radius / Math.tan(verticalFov * 0.5)) * 1.2
+      : 0;
+    this.minimumCameraDistance = fitDistance;
+    const distance = Math.max(this.lookConfig.camera.distance, this.minimumCameraDistance);
+
+    this.camera.position.set(this.creatureFocus.x, this.creatureFocus.y, distance);
+    this.camera.lookAt(this.creatureFocus);
+    if (this.orbitControls) {
+      this.orbitControls.target.copy(this.creatureFocus);
+      this.orbitControls.update();
     }
   }
 
@@ -567,212 +657,8 @@ export class JellyfishMaterialTestScene {
     console.log(`  - Renderer: ${this.renderer.getIsWebGPU() ? 'WebGPU' : 'WebGL'}`);
   }
 
-  /**
-   * Build creature units (single body or colony)
-   */
-  private buildCreatureUnits(rig: CreatureRig): void {
-    this.units = [];
-    this.creatureGroup = new THREE.Group();
-    this.creatureGroup.position.y = 20;
-
-    for (const unit of rig.units) {
-      const geometryData = JellyfishGeometry.create(unit.spec);
-      const materials = this.createUnitMaterials();
-      const runtime: UnitRuntime = {
-        id: unit.id,
-        geometryData,
-        group: new THREE.Group(),
-        ...materials,
-      };
-
-      runtime.group = this.createUnitMesh(runtime);
-      runtime.group.position.set(unit.transform.position.x, unit.transform.position.y, unit.transform.position.z);
-      runtime.group.scale.setScalar(unit.transform.scale);
-
-      this.units.push(runtime);
-      this.creatureGroup.add(runtime.group);
-    }
-  }
-
-  /**
-   * Create materials for a single unit
-   */
-  private createUnitMaterials(): Omit<UnitRuntime, 'id' | 'geometryData' | 'group'> {
-    const bulbMaterial = new BulbNodeMaterial();
-    // Default values from original Medusae.js reference
-    bulbMaterial.setDiffuse(0xFFA9D2);
-    bulbMaterial.setDiffuseB(0x70256C); // Fixed: was 0x90256C
-    bulbMaterial.setOpacity(0.75); // Fixed: was 0.65
-    if (this.refractionTarget) {
-      bulbMaterial.setRefractionTexture(this.refractionTarget.texture);
-      bulbMaterial.setRefractionStrength(0); // Start with no refraction
-      bulbMaterial.setIor(1.33);
-      bulbMaterial.setDispersion(0.03);
-      bulbMaterial.setRefractionResolution(this.refractionTarget.width, this.refractionTarget.height);
-    }
-
-    const gelMaterial = new GelNodeMaterial({
-      diffuse: 0x415AB5,
-      opacity: 0.25, // Fixed: was 0.35
-    });
-
-    const tailMaterial = new TailNodeMaterial();
-    tailMaterial.setDiffuse(0xE4BBEE); // Fixed: was 0x997299
-    tailMaterial.setDiffuseB(0x241138); // Fixed: was 0x100515
-    tailMaterial.updateOpacity(0.75); // Fixed: was 0.45
-
-    const mouthMaterial = new TailNodeMaterial();
-    mouthMaterial.setDiffuse(0xEFA6F0); // Fixed: was 0x997299
-    mouthMaterial.setDiffuseB(0x4A67CE); // Fixed: was 0x241138
-    mouthMaterial.setScale(3);
-    mouthMaterial.updateOpacity(0.65); // Fixed: was 0.45
-
-    const tentacleMaterial = new TentacleNodeMaterial({
-      color: 0x997299,
-      transparent: true,
-      opacity: 0.25, // Fixed: was 0.5
-      depthTest: true,
-      depthWrite: false,
-    });
-    tentacleMaterial.setArea(2000); // Fixed: was 2500
-
-    return {
-      bulbMaterial,
-      gelMaterial,
-      tailMaterial,
-      mouthMaterial,
-      tentacleMaterial,
-    };
-  }
-
-  /**
-   * Create the mesh group for a single unit
-   */
-  private createUnitMesh(unit: UnitRuntime): THREE.Group {
-    const group = new THREE.Group();
-    const gd = unit.geometryData;
-
-    // Bulb mesh
-    const bulbGeometry = new THREE.BufferGeometry();
-    bulbGeometry.setAttribute('position', gd.position);
-    bulbGeometry.setAttribute('positionPrev', gd.positionPrev);
-    bulbGeometry.setAttribute('uv', new THREE.BufferAttribute(gd.uvs, 2));
-    bulbGeometry.setAttribute('normal', gd.geometry.attributes.normal);
-    bulbGeometry.setIndex(gd.faces.bulb);
-    bulbGeometry.computeVertexNormals();
-    const bulbMesh = new THREE.Mesh(bulbGeometry, unit.bulbMaterial);
-    bulbMesh.scale.setScalar(0.95);
-    group.add(bulbMesh);
-
-    // Gel overlay mesh (slightly larger)
-    const gelGeometry = new THREE.BufferGeometry();
-    gelGeometry.setAttribute('position', gd.position);
-    gelGeometry.setAttribute('positionPrev', gd.positionPrev);
-    gelGeometry.setAttribute('uv', new THREE.BufferAttribute(gd.uvs, 2));
-    gelGeometry.setAttribute('normal', gd.geometry.attributes.normal);
-    gelGeometry.setIndex(gd.faces.bulb);
-    gelGeometry.computeVertexNormals();
-    const gelMesh = new THREE.Mesh(gelGeometry, unit.gelMaterial);
-    gelMesh.scale.setScalar(1.05);
-    group.add(gelMesh);
-
-    // Tail mesh
-    if (gd.faces.tail.length > 0 && unit.tailMaterial) {
-      const tailGeometry = new THREE.BufferGeometry();
-      tailGeometry.setAttribute('position', gd.position);
-      tailGeometry.setAttribute('positionPrev', gd.positionPrev);
-      tailGeometry.setAttribute('uv', new THREE.BufferAttribute(gd.uvs, 2));
-      tailGeometry.setAttribute('normal', gd.geometry.attributes.normal);
-      tailGeometry.setIndex(gd.faces.tail);
-      tailGeometry.computeVertexNormals();
-      const tailMesh = new THREE.Mesh(tailGeometry, unit.tailMaterial);
-      tailMesh.scale.setScalar(0.95);
-      group.add(tailMesh);
-    }
-
-    // Mouth mesh
-    if (gd.faces.mouth.length > 0 && unit.mouthMaterial) {
-      const mouthGeometry = new THREE.BufferGeometry();
-      mouthGeometry.setAttribute('position', gd.position);
-      mouthGeometry.setAttribute('positionPrev', gd.positionPrev);
-      mouthGeometry.setAttribute('uv', new THREE.BufferAttribute(gd.uvs, 2));
-      mouthGeometry.setAttribute('normal', gd.geometry.attributes.normal);
-      mouthGeometry.setIndex(gd.faces.mouth);
-      mouthGeometry.computeVertexNormals();
-      const mouthMesh = new THREE.Mesh(mouthGeometry, unit.mouthMaterial);
-      group.add(mouthMesh);
-    }
-
-    // Tentacle lines
-    if (gd.links.tentacles.length > 0 && unit.tentacleMaterial) {
-      const tentacleGeometry = new THREE.BufferGeometry();
-      tentacleGeometry.setAttribute('position', gd.position);
-      tentacleGeometry.setAttribute('positionPrev', gd.positionPrev);
-      tentacleGeometry.setAttribute('normal', gd.geometry.attributes.normal);
-      tentacleGeometry.setIndex(gd.links.tentacles);
-      const tentacleLines = new THREE.LineSegments(tentacleGeometry, unit.tentacleMaterial);
-      group.add(tentacleLines);
-    }
-
-    // LinesFore - smooth curved lines following the surface
-    if (gd.links.linesFore.length > 0) {
-      const linesForeGeometry = new THREE.BufferGeometry();
-      linesForeGeometry.setAttribute('position', gd.position);
-      linesForeGeometry.setAttribute('positionPrev', gd.positionPrev);
-      linesForeGeometry.setIndex(gd.links.linesFore);
-
-      const linesForeMaterial = new InterpolatedLineMaterial({
-        color: 0xffdde9, // Light pink
-        transparent: true,
-        opacity: 0.1,
-        blending: THREE.AdditiveBlending,
-        depthTest: false,
-        depthWrite: false,
-      });
-
-      const linesFore = new THREE.LineSegments(linesForeGeometry, linesForeMaterial);
-      group.add(linesFore);
-    }
-
-    // LinesInner - smooth inner structure lines
-    if (gd.links.linesInner.length > 0) {
-      const linesInnerGeometry = new THREE.BufferGeometry();
-      linesInnerGeometry.setAttribute('position', gd.position);
-      linesInnerGeometry.setAttribute('positionPrev', gd.positionPrev);
-      linesInnerGeometry.setIndex(gd.links.linesInner);
-
-      const linesInnerMaterial = new InterpolatedLineMaterial({
-        color: 0xf99ebd, // Muted pink
-        transparent: true,
-        opacity: 0.06,
-        blending: THREE.AdditiveBlending,
-        depthTest: false,
-        depthWrite: false,
-      });
-
-      const linesInner = new THREE.LineSegments(linesInnerGeometry, linesInnerMaterial);
-      group.add(linesInner);
-    }
-
-    // Inner constraint lines (for visual structure)
-    if (this.config.showConstraints) {
-      const lineGeometry = new THREE.BufferGeometry();
-      lineGeometry.setAttribute('position', gd.position);
-      lineGeometry.setAttribute('positionPrev', gd.positionPrev);
-      lineGeometry.setIndex(gd.links.bulb);
-
-      const lineMaterial = new InterpolatedLineMaterial({
-        color: 0xff00ff,
-        transparent: true,
-        opacity: 0.3,
-      });
-
-      const lineSegments = new THREE.LineSegments(lineGeometry, lineMaterial);
-      group.add(lineSegments);
-    }
-
-    return group;
-  }
+  // buildCreatureUnits, createUnitMaterials, and createUnitMesh
+  // have been moved into the fallback archetype (_jellyfishArchetype).
 
   /**
    * Create dust particle system
@@ -826,48 +712,16 @@ export class JellyfishMaterialTestScene {
     const y = -((mouseY - rect.top) / rect.height) * 2 + 1;
 
     // Project NDC to "world" target (approximate for the 2D plane at z=0)
-    // Camera is at distance 120, FOV 45
     const targetX = x * 60;
-    const targetY = y * 60 + this.creatureGroup.position.y; // group y-offset
+    const targetY = y * 60 + (this.creatureGroup?.position.y ?? 20);
 
-    const direction = new THREE.Vector3(x, y, 0).normalize();
-
-    for (const unit of this.units) {
-      const { pinConstraints } = unit.geometryData;
-      const size = unit.geometryData.config.size;
-
-      // Convert target to unit-local coordinates (unit group is offset under creatureGroup)
-      const ux = unit.group.position.x;
-      const uy = unit.group.position.y;
-      const localX = targetX - ux;
-      const localY = targetY - uy;
-
-      // 1. Move the anchor pins (The "Core") - snapping
-      pinConstraints.top.setPosition(localX, localY + size, 0);
-      pinConstraints.mid.setPosition(localX, localY, 0);
-      pinConstraints.bottom.setPosition(localX, localY - size, 0);
-      pinConstraints.tail.setPosition(localX, localY - size * 2, 0);
-      pinConstraints.tentacle.setPosition(localX, localY - size * 2.5, 0);
-
-      // 2. Apply nudge force to the rest of the body (The "Softness")
-      const system = unit.geometryData.system;
-      const positions = system.positions;
-      const particleCount = positions.length / 3;
-
-      for (let i = 5; i < particleCount; i++) {
-        const idx = i * 3;
-        const px = positions[idx];
-        const pz = positions[idx + 2];
-        const dist = Math.sqrt(px * px + pz * pz);
-        const factor = Math.min(1, dist / 20) * magnitude;
-
-        positions[idx] += direction.x * factor;
-        positions[idx + 1] += direction.y * factor;
-        positions[idx + 2] += direction.z * factor;
-      }
+    // Dispatch physics interactions to archetype
+    if (this.archetype && this.bodyData) {
+      const origin = new THREE.Vector3(targetX, targetY, 0);
+      this.archetype.applyInteraction?.(this.bodyData, magnitude, origin);
     }
 
-    // Spawn lens dirt particles on interaction
+    // Spawn lens dirt particles on interaction (scene-owned effect)
     if (this.lensDirt) {
       this.lensDirt.spawn(x, y, 5);
     }
@@ -889,7 +743,7 @@ export class JellyfishMaterialTestScene {
       const h = Math.max(1, Math.floor(window.innerHeight * dpr));
       this.refractionTarget.setSize(w, h);
       for (const unit of this.units) {
-        unit.bulbMaterial.setRefractionResolution(w, h);
+        unit.bulbMaterial?.setRefractionResolution(w, h);
       }
     }
 
@@ -963,40 +817,67 @@ export class JellyfishMaterialTestScene {
 
     this.scene.background = this.colorFromHex(config.scene.background);
 
-    this.camera.position.set(0, 0, config.camera.distance);
+    this.camera.position.set(
+      this.creatureFocus.x,
+      this.creatureFocus.y,
+      Math.max(config.camera.distance, this.minimumCameraDistance),
+    );
+    this.camera.lookAt(this.creatureFocus);
     this.autoRotateSpeed = config.camera.autoRotateSpeed;
 
     if (this.orbitControls) {
       this.orbitControls.autoRotateSpeed = this.autoRotateSpeed;
     }
 
-    this.pulseSpeed = config.pulse.speed;
-    this.pulseAmplitude = config.pulse.amplitude;
+    if (this.bodyData) {
+      this.bodyData.animationState.pulseSpeed = config.pulse.speed;
+      this.bodyData.animationState.pulseAmplitude = config.pulse.amplitude;
+    }
 
-    for (const unit of this.units) {
-      unit.bulbMaterial.setDiffuse(this.colorFromHex(config.bulb.colorA));
-      unit.bulbMaterial.setDiffuseB(this.colorFromHex(config.bulb.colorB));
-      unit.bulbMaterial.setOpacity(config.bulb.opacity);
-      unit.bulbMaterial.setPatternScale0(config.bulb.patternScale0);
-      unit.bulbMaterial.setPatternScale1(config.bulb.patternScale1);
-      unit.bulbMaterial.setRimBoost(config.bulb.rimBoost);
+    // Material lookup config only applies to jellyfish archetype materials.
+    // Fish and Anemone use hardcoded MeshPhysicalMaterial colors in buildMeshes.
+    if (this.archetype?.id === 'jellyfish') {
+      for (const unit of this.units) {
+        unit.bulbMaterial?.setDiffuse(this.colorFromHex(config.bulb.colorA));
+        unit.bulbMaterial?.setDiffuseB(this.colorFromHex(config.bulb.colorB));
+        unit.bulbMaterial?.setOpacity(config.bulb.opacity);
+        unit.bulbMaterial?.setPatternScale0(config.bulb.patternScale0);
+        unit.bulbMaterial?.setPatternScale1(config.bulb.patternScale1);
+        unit.bulbMaterial?.setRimBoost(config.bulb.rimBoost);
 
-      unit.gelMaterial.setDiffuse(this.hexToNumber(config.gel.color));
-      unit.gelMaterial.updateOpacity(config.gel.opacity);
+        unit.gelMaterial?.setDiffuse(this.hexToNumber(config.gel.color));
+        unit.gelMaterial?.updateOpacity(config.gel.opacity);
 
-      unit.tailMaterial?.setDiffuse(this.hexToNumber(config.tail.colorA));
-      unit.tailMaterial?.setDiffuseB(this.hexToNumber(config.tail.colorB));
-      unit.tailMaterial?.updateOpacity(config.tail.opacity);
-      unit.tailMaterial?.setScale(config.tail.scale);
+        unit.tailMaterial?.setDiffuse(this.hexToNumber(config.tail.colorA));
+        unit.tailMaterial?.setDiffuseB(this.hexToNumber(config.tail.colorB));
+        unit.tailMaterial?.updateOpacity(config.tail.opacity);
+        unit.tailMaterial?.setScale(config.tail.scale);
 
-      unit.mouthMaterial?.setDiffuse(this.hexToNumber(config.mouth.colorA));
-      unit.mouthMaterial?.setDiffuseB(this.hexToNumber(config.mouth.colorB));
-      unit.mouthMaterial?.updateOpacity(config.mouth.opacity);
-      unit.mouthMaterial?.setScale(config.mouth.scale);
+        unit.mouthMaterial?.setDiffuse(this.hexToNumber(config.mouth.colorA));
+        unit.mouthMaterial?.setDiffuseB(this.hexToNumber(config.mouth.colorB));
+        unit.mouthMaterial?.updateOpacity(config.mouth.opacity);
+        unit.mouthMaterial?.setScale(config.mouth.scale);
 
-      unit.tentacleMaterial?.setDiffuse(this.colorFromHex(config.tentacle.color));
-      unit.tentacleMaterial?.setOpacity(config.tentacle.opacity);
-      unit.tentacleMaterial?.setArea(config.tentacle.area);
+        unit.tentacleMaterial?.setDiffuse(this.colorFromHex(config.tentacle.color));
+        unit.tentacleMaterial?.setOpacity(config.tentacle.opacity);
+        unit.tentacleMaterial?.setArea(config.tentacle.area);
+      }
+    } else {
+      // Non-jellyfish archetypes still consume the same preset palette.
+      for (const unit of this.units) {
+        const surface = unit.bodyMaterial ?? unit.stalkMaterial;
+        if (surface) {
+          surface.color.set(config.bulb.colorA);
+          surface.emissive.set(config.bulb.colorB);
+          surface.opacity = config.bulb.opacity;
+          surface.needsUpdate = true;
+        }
+        if (unit.tentMaterial) {
+          (unit.tentMaterial as any).color = this.colorFromHex(config.tentacle.color);
+          (unit.tentMaterial as any).opacity = config.tentacle.opacity;
+          unit.tentMaterial.needsUpdate = true;
+        }
+      }
     }
 
     if (dustChanged) {
@@ -1036,24 +917,25 @@ export class JellyfishMaterialTestScene {
    * Update material uniforms
    */
   private updateMaterials(time: number, stepProgress: number): void {
-    // Update time-based materials
-    for (const unit of this.units) {
-      unit.bulbMaterial.setTime(time);
+    // Jellyfish units have bulb/gel/tail/mouth/tentacle materials.
+    // Fish and Anemone use static MeshPhysicalMaterial — no time/step uniforms.
+    if (this.archetype?.id === 'jellyfish') {
+      for (const unit of this.units) {
+        unit.bulbMaterial?.setTime(time);
+        unit.bulbMaterial?.setStepProgress(stepProgress);
+        unit.gelMaterial?.setStepProgress(stepProgress);
+        unit.tailMaterial?.updateStepProgress(stepProgress);
+        unit.mouthMaterial?.updateStepProgress(stepProgress);
+        unit.tentacleMaterial?.setStepProgress(stepProgress);
+      }
+    } else if (this.archetype?.id === 'anemone') {
+      for (const unit of this.units) unit.tentMaterial?.setStepProgress(stepProgress);
     }
 
-    // Update dust time
+    // Update dust time (shared, archetype-independent)
     if (this.dustSystem && this.dustSystem.material) {
       const dustMat = this.dustSystem.material as DustNodeMaterial;
       dustMat.setTime(time);
-    }
-
-    // Update step progress for all interpolated materials
-    for (const unit of this.units) {
-      unit.bulbMaterial.setStepProgress(stepProgress);
-      unit.gelMaterial.setStepProgress(stepProgress);
-      unit.tailMaterial?.updateStepProgress(stepProgress);
-      unit.mouthMaterial?.updateStepProgress(stepProgress);
-      unit.tentacleMaterial?.setStepProgress(stepProgress);
     }
   }
 
@@ -1097,8 +979,9 @@ export class JellyfishMaterialTestScene {
       this.physicsTickCount++;
     });
 
-    // Update animation time
-    this.animTime += clampedDelta * 0.001 * this.pulseSpeed;
+    // Update animation time (pulse speed from bodyData.animationState)
+    const pulseSpeed = this.bodyData?.animationState.pulseSpeed ?? 0.5;
+    this.animTime += clampedDelta * 0.001 * pulseSpeed;
 
     // Update all materials
     this.updateMaterials(this.animTime, stepProgress);
@@ -1131,64 +1014,16 @@ export class JellyfishMaterialTestScene {
   }
 
   /**
-   * Update physics simulation
+   * Update physics simulation — dispatched to archetype
    */
   private updatePhysics(delta: number): void {
-    // Update rib constraints with pulse animation
-    const phase = this.timePhase(this.animTime);
-
-    for (const unit of this.units) {
-      this.updateRibs(unit.geometryData, phase);
-
-      // Tick physics
-      unit.geometryData.system.tick(delta * 0.001);
-
-      // Mark buffers for update
-      unit.geometryData.position.needsUpdate = true;
-      unit.geometryData.positionPrev.needsUpdate = true;
+    if (this.archetype && this.bodyData) {
+      const amplitude = this.bodyData.animationState.pulseAmplitude ?? 0.15;
+      this.archetype.animateBody(this.bodyData, this.animTime, delta, amplitude);
     }
-
   }
 
-  /**
-   * Calculate pulse phase
-   */
-  private timePhase(time: number): number {
-    return (Math.sin(time * Math.PI - Math.PI * 0.5) + 1) * 0.5;
-  }
-
-  private updateRibs(geometryData: JellyfishGeometryData, phase: number): void {
-    // expansion factor: 1.0 (rest) to 1.15 (expanded)
-    const expansion = 1.0 + phase * this.pulseAmplitude;
-
-    // Pulse bell ribs
-    geometryData.ribs.forEach((rib) => {
-      if (rib.initialDistances) {
-        if (rib.outer && rib.initialDistances.outer) {
-          rib.outer.setDistance(
-            rib.initialDistances.outer[0] * expansion,
-            rib.initialDistances.outer[1] * expansion
-          );
-        }
-        if (rib.inner && rib.initialDistances.inner) {
-          rib.inner.setDistance(
-            rib.initialDistances.inner[0] * expansion,
-            rib.initialDistances.inner[1] * expansion
-          );
-        }
-      }
-    });
-
-    // Pulse tail ribs for secondary motion
-    geometryData.tailRibs.forEach((rib) => {
-      if (rib.initialDistances && rib.outer && rib.initialDistances.outer) {
-        rib.outer.setDistance(
-          rib.initialDistances.outer[0] * expansion,
-          rib.initialDistances.outer[1] * expansion
-        );
-      }
-    });
-  }
+  // timePhase and updateRibs moved into the fallback archetype (_jellyfishArchetype).
 
   /**
    * Update debug UI elements

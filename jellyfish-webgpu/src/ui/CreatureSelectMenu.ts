@@ -1,17 +1,45 @@
-import type { ArchetypeId } from '../jellyfish/creatures';
-import { ARCHETYPES } from '../jellyfish/creatures';
+import type { PresetId } from '../jellyfish/creatures';
+import { PRESETS } from '../jellyfish/creatures';
 
 export interface CreatureSelectMenuOptions {
-  initial: ArchetypeId;
-  onSelect: (id: ArchetypeId) => void;
+  initial: PresetId;
+  onSelect: (id: PresetId) => void;
   onMutate?: () => void;
   onRandomize?: () => void;
+}
+
+/**
+ * Maps archetype ids to human-readable group labels shown in the optgroup.
+ */
+const ARCHETYPE_LABELS: Record<string, string> = {
+  jellyfish: 'Jellyfish',
+  fish: 'Fish',
+  anemone: 'Anemone',
+};
+
+/** Group preset IDs by their archetype, preserving insertion order. */
+function groupByArchetype(): { archetype: string; presets: PresetId[] }[] {
+  const groups = new Map<string, PresetId[]>();
+
+  for (const id of Object.keys(PRESETS) as PresetId[]) {
+    const preset = PRESETS[id];
+    const archetype = preset.spec.archetypeId;
+    if (!groups.has(archetype)) {
+      groups.set(archetype, []);
+    }
+    groups.get(archetype)!.push(id);
+  }
+
+  return Array.from(groups.entries()).map(([archetype, presets]) => ({
+    archetype,
+    presets,
+  }));
 }
 
 export class CreatureSelectMenu {
   private root: HTMLDivElement;
   private select: HTMLSelectElement;
-  private onSelect: (id: ArchetypeId) => void;
+  private onSelect: (id: PresetId) => void;
   private onChange: () => void;
   private mutateBtn?: HTMLButtonElement;
   private randomBtn?: HTMLButtonElement;
@@ -59,15 +87,26 @@ export class CreatureSelectMenu {
       outline: none;
       cursor: pointer;
       letter-spacing: 0.2px;
+      min-width: 160px;
     `;
 
-    // Add options
-    (Object.keys(ARCHETYPES) as ArchetypeId[]).forEach((id) => {
-      const opt = document.createElement('option');
-      opt.value = id;
-      opt.textContent = ARCHETYPES[id].name;
-      this.select.appendChild(opt);
-    });
+    // Build groups of presets by archetype
+    const groups = groupByArchetype();
+
+    for (const group of groups) {
+      const optgroup = document.createElement('optgroup');
+      optgroup.label = ARCHETYPE_LABELS[group.archetype] ?? group.archetype;
+
+      for (const id of group.presets) {
+        const opt = document.createElement('option');
+        opt.value = id;
+        opt.textContent = PRESETS[id].name;
+        optgroup.appendChild(opt);
+      }
+
+      this.select.appendChild(optgroup);
+    }
+
     this.select.value = options.initial;
 
     // Add a small chevron
@@ -115,7 +154,7 @@ export class CreatureSelectMenu {
     document.body.appendChild(this.root);
 
     this.onChange = () => {
-      const next = (this.select.value as ArchetypeId) || options.initial;
+      const next = (this.select.value as PresetId) || options.initial;
       this.onSelect(next);
     };
     this.select.addEventListener('change', this.onChange);
@@ -128,7 +167,7 @@ export class CreatureSelectMenu {
     window.addEventListener('keydown', this.keyHandler);
   }
 
-  setValue(id: ArchetypeId): void {
+  setValue(id: PresetId): void {
     this.select.value = id;
   }
 

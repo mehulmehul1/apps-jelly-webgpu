@@ -1,0 +1,74 @@
+{
+  "combJelly": {
+    "particleCount": 656,
+    "constraintCount": 65,
+    "vertexCount": 656,
+    "faceCount": 1260
+  },
+  "salp": {
+    "particleCount": 656,
+    "constraintCount": 65,
+    "vertexCount": 656,
+    "faceCount": 1224
+  },
+  "siphonophore": {
+    "particleCount": 15224,
+    "constraintCount": 1333,
+    "vertexCount": 15224,
+    "faceCount": 5100
+  },
+  "anemone": {
+    "particleCount": 26972,
+    "constraintCount": 794,
+    "vertexCount": 26972,
+    "faceCount": 972
+  },
+  "glassSponge": {
+    "particleCount": 1016,
+    "constraintCount": 95,
+    "vertexCount": 1016,
+    "faceCount": 1944
+  },
+  "ascidia": {
+    "particleCount": 584,
+    "constraintCount": 59,
+    "vertexCount": 584,
+    "faceCount": 1116
+  },
+  "star": {
+    "particleCount": 440,
+    "constraintCount": 47,
+    "vertexCount": 440,
+    "faceCount": 828
+  },
+  "discJelly": {
+    "particleCount": 9740,
+    "constraintCount": 538,
+    "vertexCount": 9740,
+    "faceCount": 1980
+  },
+  "boxJelly": {
+    "particleCount": 13796,
+    "constraintCount": 724,
+    "vertexCount": 13796,
+    "faceCount": 2316
+  },
+  "seaNettle": {
+    "particleCount": 55172,
+    "constraintCount": 2299,
+    "vertexCount": 55172,
+    "faceCount": 4716
+  },
+  "lobeJelly": {
+    "particleCount": 1880,
+    "constraintCount": 636,
+    "vertexCount": 1880,
+    "faceCount": 3612
+  },
+  "customLab": {
+    "particleCount": 584,
+    "constraintCount": 59,
+    "vertexCount": 584,
+    "faceCount": 1116
+  }
+}
