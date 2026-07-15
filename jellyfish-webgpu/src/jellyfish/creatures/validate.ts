@@ -1,5 +1,5 @@
 import { BodyPlan } from './BodyPlan';
-import type { CreatureSpec, JellyfishGeometryConfig } from './CreatureSpec';
+import type { CreatureSpec, JellyfishSpec, JellyfishGeometryConfig } from './CreatureSpec';
 import { DEFAULT_GEOMETRY_CONFIG, resolveGeometryConfig } from './CreatureSpec';
 
 function clampInt(v: number, min: number, max: number): number {
@@ -44,7 +44,12 @@ export interface ValidationResult {
 export function validateCreatureSpec(input: CreatureSpec): ValidationResult {
   const warnings: string[] = [];
 
-  const spec: CreatureSpec = structuredClone(input);
+  // Only JellyfishSpec has geometry / lobes / colony / emitters — skip full validation for stubs
+  if (input.archetypeId !== 'jellyfish') {
+    return { spec: structuredClone(input), warnings };
+  }
+
+  const spec: JellyfishSpec = structuredClone(input) as JellyfishSpec;
   const cfg = resolveGeometryConfig(spec);
 
   // Basic topology sanity
@@ -114,8 +119,8 @@ export function validateCreatureSpec(input: CreatureSpec): ValidationResult {
       sf.a = clampFinite(sf.a ?? 1.0, 0.1, 2.0, 1.0);
       sf.b = clampFinite(sf.b ?? 1.0, 0.1, 2.0, 1.0);
       sf.n1 = clampFinite(sf.n1, 0.05, 5.0, 0.35);
-      sf.n2 = clampFinite(sf.n2, 0.05, 5.0, 0.35);
-      sf.n3 = clampFinite(sf.n3, 0.05, 5.0, 0.35);
+      sf.n2 = clampFinite(sf.n2, 0.05, 8.0, 0.35);
+      sf.n3 = clampFinite(sf.n3, 0.05, 8.0, 0.35);
     }
 
     if (cs.kind === 'circle') {

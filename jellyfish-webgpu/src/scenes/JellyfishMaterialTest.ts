@@ -36,17 +36,15 @@ import { JellyfishPostProcessing, LensDirtEffect } from '../post-processing';
 import { JellyfishLookEditor } from '../editor/JellyfishLookEditor';
 import { LookConfig, DEFAULT_LOOK_PRESET, cloneLookConfig, applyLookPreset } from '../editor/look-presets';
 import {
-  ARCHETYPES,
-  type ArchetypeId,
+  PRESETS,
+  type PresetId,
   createCreatureRig,
   type CreatureRig,
   mutateCreatureSpec,
   type CreatureSpec,
+  type JellyfishSpec,
 } from '../jellyfish/creatures';
 import { CreatureSelectMenu } from '../ui/CreatureSelectMenu';
-import { CreatureAssembler } from '../jellyfish/builder/CreatureAssembler';
-import type { CreatureGraph } from '../jellyfish/graph/CreatureGraph';
-import type { FormDefinition } from '../jellyfish/graph/FormDefinition';
 
 export interface MaterialTestConfig {
   /** Enable FPS counter */
@@ -80,29 +78,6 @@ interface UnitRuntime {
   tailMaterial?: TailNodeMaterial;
   mouthMaterial?: TailNodeMaterial;
   tentacleMaterial?: TentacleNodeMaterial;
-}
-
-interface CustomPhysicsRuntime {
-  system: Particulate.ParticleSystem;
-  ribs: {
-    constraint: Particulate.DistanceConstraint,
-    initialDist: number[],
-    v: number
-  }[];
-  radials: {
-    constraint: Particulate.DistanceConstraint,
-    initialDist: number[],
-    v: number
-  }[];
-  geometry: THREE.BufferGeometry;
-  position: THREE.BufferAttribute;
-  positionPrev: THREE.BufferAttribute;
-
-  // Instance-level tuning
-  pulseAmplitude: number;
-  pulseWave: number;    // 0 = uniform, > 0 = wave factor
-  stiffness: number;
-  damping: number;
 }
 
 /**
@@ -257,10 +232,8 @@ export class JellyfishMaterialTestScene {
   private creatureRig!: CreatureRig;
   private creatureGroup!: THREE.Group;
   private units: UnitRuntime[] = [];
-  private customMaterials: BulbNodeMaterial[] = [];
-  private customPhysics: CustomPhysicsRuntime[] = [];
   private creatureMenu?: CreatureSelectMenu;
-  private currentArchetypeId?: ArchetypeId;
+  private currentPresetId?: PresetId;
   private currentSpec?: CreatureSpec;
 
   // Lens dirt for interactions
@@ -290,7 +263,6 @@ export class JellyfishMaterialTestScene {
   // State
   private config: MaterialTestConfig;
   private isRunning = false;
-  private isBuilderPreviewActive = false;
   private physicsTimestep = 1000 / 30;
   private lastFrameTime = performance.now();
   private physicsTickCount = 0;
@@ -312,12 +284,12 @@ export class JellyfishMaterialTestScene {
     this.lookConfig = cloneLookConfig(this.config.lookPreset ?? DEFAULT_LOOK_PRESET);
   }
 
-  private setCreature(archetypeId: ArchetypeId): void {
-    const nextId = ARCHETYPES[archetypeId] ? archetypeId : 'combJelly';
-    this.currentArchetypeId = nextId;
+  private setCreature(presetId: PresetId): void {
+    const nextId = PRESETS[presetId] ? presetId : 'combJelly';
+    this.currentPresetId = nextId;
 
-    const archetype = ARCHETYPES[nextId];
-    this.currentSpec = structuredClone(archetype.spec);
+    const preset = PRESETS[nextId];
+    this.currentSpec = structuredClone(preset.spec);
 
     // Update URL (so sharing links works)
     const url = new URL(window.location.href);
@@ -330,20 +302,14 @@ export class JellyfishMaterialTestScene {
       this.disposeUnits();
     }
 
-    // Build creature rig (1 unit for most, multiple units for siphonophore)
-    if (nextId === 'customLab') {
-      this.loadCustomFromLab();
-      return;
-    }
-
     this.creatureRig = createCreatureRig(this.currentSpec);
     if (this.creatureRig.warnings.length > 0) {
       console.warn('[CreatureRig] Validation warnings:', this.creatureRig.warnings);
     }
 
-    // Reset the look to default, then layer archetype look, then per-spec look.
+    // Reset the look to default, then layer preset look, then per-spec look.
     applyLookPreset(this.lookConfig, DEFAULT_LOOK_PRESET);
-    applyLookPreset(this.lookConfig, archetype.look);
+    applyLookPreset(this.lookConfig, preset.look);
     if (this.creatureRig.spec.look) {
       applyLookPreset(this.lookConfig, this.creatureRig.spec.look);
     }
@@ -364,14 +330,14 @@ export class JellyfishMaterialTestScene {
   private publishFxFeatures(): void {
     const fx = (window as any).$fx as undefined | { features?: (f: Record<string, any>) => void };
     if (!fx?.features) return;
-    if (!this.currentArchetypeId || !this.currentSpec) return;
+    if (!this.currentPresetId || !this.currentSpec) return;
 
     const cs = this.currentSpec.crossSection;
     const topology = this.currentSpec.topology;
-    const colony = this.currentSpec.colony;
+    const colony = this.currentSpec.archetypeId === 'jellyfish' ? (this.currentSpec as JellyfishSpec).colony : undefined;
 
     fx.features({
-      Creature: ARCHETYPES[this.currentArchetypeId]?.name ?? this.currentArchetypeId,
+      Creature: PRESETS[this.currentPresetId]?.name ?? this.currentPresetId,
       BodyPlan: this.currentSpec.bodyPlan,
       'Cross-Section': cs?.kind ?? 'circle',
       'Cap Top': topology?.capTop ? 'Yes' : 'No',
@@ -407,174 +373,12 @@ export class JellyfishMaterialTestScene {
   }
 
   private randomizeCreature(): void {
-    const ids = Object.keys(ARCHETYPES) as ArchetypeId[];
+    const ids = Object.keys(PRESETS) as PresetId[];
     const rng = this.getRng();
     const id = ids[Math.floor(rng() * ids.length)] ?? 'combJelly';
     this.setCreature(id);
     // One mutation makes the random pick feel more "alive" instantly.
     this.mutateCreature();
-  }
-
-  /**
-   * Updates the displayed creature from a CreatureGraph (Visual Builder Mode)
-   */
-  public updateFromGraph(graph: CreatureGraph, forms: FormDefinition[]): void {
-    if (this.creatureGroup) {
-      this.scene?.remove(this.creatureGroup);
-      this.disposeUnits(); // Clean up physics units
-    }
-
-    // Use the Assembler to build the visual representation
-    const assembler = new CreatureAssembler(forms);
-    const { group, materials, physics } = assembler.assemble(graph);
-    this.creatureGroup = group;
-    this.customMaterials = materials;
-
-    // Initialize Custom Physics
-    const system = Particulate.ParticleSystem.create(Array.from(physics.particles), 2);
-
-    // Get physics config from root form if available
-    const rootNode = graph.root;
-    const rootForm = (rootNode && rootNode.type === 'Part') ? forms.find(f => f.id === rootNode.formId) : null;
-    const physicsConfig = rootForm?.physics;
-
-    const ribRuntime: { constraint: Particulate.DistanceConstraint, initialDist: number[], v: number }[] = [];
-    const radRuntime: { constraint: Particulate.DistanceConstraint, initialDist: number[], v: number }[] = [];
-
-    // Map rib start indices to v for radial lookups
-    const ribMap = new Map<number, { v: number }>();
-    physics.ribs.forEach(r => ribMap.set(r.start, { v: r.v }));
-
-    // Stiffness logic: 1.0 (default) = 0.8 to 1.2 range. Higher = tighter.
-    const stiffness = physicsConfig?.stiffness ?? 1.0;
-    const spread = 0.2 / stiffness;
-    const rangeMin = 1.0 - spread;
-    const rangeMax = 1.0 + spread;
-
-    physics.constraints.forEach(c => {
-      const avgDist = c.distances[0];
-      const constraint = Particulate.DistanceConstraint.create([avgDist * rangeMin, avgDist * rangeMax], c.indices);
-      system.addConstraint(constraint);
-
-      // Check if this matches a rib for pulsing
-      const ribInfo = ribMap.get(c.indices[0]);
-      if (ribInfo && c.indices.length === 2 && Math.abs(c.indices[0] - c.indices[1]) === 1) {
-        // This is a horizontal ring segment
-        ribRuntime.push({ constraint, initialDist: [avgDist * 0.8, avgDist * 1.2], v: ribInfo.v });
-      }
-    });
-
-    physics.radials.forEach(r => {
-      const avgDist = r.distances[0];
-      const constraint = Particulate.DistanceConstraint.create([avgDist * rangeMin, avgDist * rangeMax], r.indices);
-      system.addConstraint(constraint);
-
-      const rimPoint = r.indices[1];
-      const ribInfo = physics.ribs.find(rb => rimPoint >= rb.start && rimPoint < rb.start + rb.count);
-      radRuntime.push({ constraint, initialDist: [avgDist * 0.8, avgDist * 1.2], v: ribInfo?.v ?? 0 });
-    });
-
-    // Add Spine Constraints (vertical center-to-center)
-    physics.spine?.forEach(s => {
-      const avgDist = s.distances[0];
-      const constraint = Particulate.DistanceConstraint.create([avgDist * rangeMin, avgDist * rangeMax], s.indices);
-      system.addConstraint(constraint);
-    });
-
-    // Add Axis Constraints (to keep spine straight but flexible)
-    physics.axis?.forEach(a => {
-      if (a.indices.length >= 3) {
-        const top = a.indices[0];
-        const bot = a.indices[a.indices.length - 1];
-        const mid = a.indices.slice(1, -1);
-        const axis = Particulate.AxisConstraint.create(top, bot, mid);
-        system.addConstraint(axis);
-      }
-    });
-
-    // Apply System-level damping (Note: Particulate API might vary, commenting out for now)
-    // system.damping = physicsConfig?.damping ?? 0.05;
-
-    // Apply Gravity if set
-    // if (physicsConfig?.gravity) {
-    //   system.gravity.set(0, physicsConfig.gravity, 0);
-    // }
-
-    // Add pinning for anchors
-    const topPin = Particulate.PointConstraint.create([0, 0, 0], physics.anchors.top);
-    system.addPinConstraint(topPin);
-
-    // Optional: pin mid/bottom for more stability if needed (matches Salp legacy)
-    // const midPin = Particulate.PointConstraint.create([0, 0, 0], physics.anchors.mid);
-    // system.addPinConstraint(midPin);
-
-    // Get the mesh to update its attributes
-    const mesh = group.children[0] as THREE.Mesh;
-
-    // IMPORTANT: Shaders need these specific buffers to animate
-    const position = new THREE.BufferAttribute(system.positions, 3);
-    const positionPrev = new THREE.BufferAttribute(system.positionsPrev, 3);
-
-    mesh.geometry.setAttribute('position', position);
-    mesh.geometry.setAttribute('positionPrev', positionPrev);
-
-    // IMPORTANT: Shaders need these specific buffers to animate
-
-    this.customPhysics = [{
-      system,
-      ribs: ribRuntime,
-      radials: radRuntime,
-      geometry: mesh.geometry,
-      position,
-      positionPrev,
-      pulseAmplitude: physicsConfig?.pulseAmplitude ?? this.pulseAmplitude,
-      pulseWave: physicsConfig?.pulseWave ?? 0, // Default to uniform for Salp-like behavior if 0
-      stiffness: physicsConfig?.stiffness ?? 1.0,
-      damping: physicsConfig?.damping ?? 0.05
-    }];
-
-    // Position it centrally
-    this.creatureGroup.position.y = 0;
-
-    // Add to scene
-    this.scene?.add(this.creatureGroup);
-
-    console.log('[Scene] Updated from Graph:', graph);
-  }
-
-  private loadCustomFromLab(): void {
-    try {
-      const stored = localStorage.getItem('jelly_saved_forms');
-      if (!stored) {
-        console.warn('[Scene] No custom forms found in localStorage');
-        return;
-      }
-
-      const library = JSON.parse(stored);
-      const names = Object.keys(library);
-      if (names.length === 0) return;
-
-      // Prioritize "icecream" as requested, otherwise take last
-      const name = names.includes('icecream') ? 'icecream' : names[names.length - 1];
-      const form = library[name] as FormDefinition;
-
-      console.log(`[Scene] Loading custom form from Lab: "${name}"`);
-
-      // Wrap in a simple graph
-      const graph: CreatureGraph = {
-        root: {
-          id: 'root',
-          type: 'Part',
-          formId: form.id,
-          children: []
-        }
-      };
-
-      this.updateFromGraph(graph, [form]);
-
-    } catch (e) {
-      console.error('[Scene] Failed to load custom form', e);
-    }
   }
 
   public disposeUnits(): void {
@@ -595,19 +399,17 @@ export class JellyfishMaterialTestScene {
   }
 
   /**
-   * Restores the original archetype/spec (Exits Builder Mode)
+   * Restores the original preset/spec
    */
   public restore(): void {
-    if (this.currentArchetypeId) {
-      this.setCreature(this.currentArchetypeId);
+    if (this.currentPresetId) {
+      this.setCreature(this.currentPresetId);
     }
   }
   /**
    * Toggles the visibility of the internal debug UI
    */
   public setUIVisibility(visible: boolean): void {
-    this.isBuilderPreviewActive = !visible;
-
     if (this.fpsCounter) this.fpsCounter.setVisible(visible);
     if (this.stepOverlay) this.stepOverlay.setVisible(visible);
     if (this.materialInfo) this.materialInfo.setVisible(visible);
@@ -701,8 +503,8 @@ export class JellyfishMaterialTestScene {
     });
 
     const urlParams = new URLSearchParams(window.location.search);
-    const archetypeId = (urlParams.get('creature') ?? 'combJelly') as ArchetypeId;
-    this.setCreature(archetypeId);
+    const presetId = (urlParams.get('creature') ?? 'combJelly') as PresetId;
+    this.setCreature(presetId);
 
     // Create dust particles
     this.createDustParticles();
@@ -724,7 +526,7 @@ export class JellyfishMaterialTestScene {
 
     // Creature selector
     this.creatureMenu = new CreatureSelectMenu({
-      initial: this.currentArchetypeId ?? 'combJelly',
+      initial: this.currentPresetId ?? 'combJelly',
       onSelect: (id) => {
         this.setCreature(id);
         this.applyLookConfig(this.lookConfig, true);
@@ -756,7 +558,7 @@ export class JellyfishMaterialTestScene {
 
     const totalParticles = this.units.reduce((sum, u) => sum + u.geometryData.system.positions.length / 3, 0);
     console.log(`Material Test Scene initialized:`);
-    const at = ARCHETYPES[this.currentArchetypeId ?? 'combJelly'];
+    const at = PRESETS[this.currentPresetId ?? 'combJelly'];
     console.log(`  - Creature: ${at.name} (${at.id})`);
     console.log(`  - Units: ${this.units.length}`);
     console.log(`  - Particles: ${totalParticles}`);
@@ -1239,12 +1041,6 @@ export class JellyfishMaterialTestScene {
       unit.bulbMaterial.setTime(time);
     }
 
-    if (!this.isBuilderPreviewActive) {
-      for (const mat of this.customMaterials) {
-        mat.setTime(time);
-      }
-    }
-
     // Update dust time
     if (this.dustSystem && this.dustSystem.material) {
       const dustMat = this.dustSystem.material as DustNodeMaterial;
@@ -1258,10 +1054,6 @@ export class JellyfishMaterialTestScene {
       unit.tailMaterial?.updateStepProgress(stepProgress);
       unit.mouthMaterial?.updateStepProgress(stepProgress);
       unit.tentacleMaterial?.setStepProgress(stepProgress);
-    }
-
-    for (const mat of this.customMaterials) {
-      mat.setStepProgress(this.isBuilderPreviewActive ? 1 : stepProgress);
     }
   }
 
@@ -1356,14 +1148,6 @@ export class JellyfishMaterialTestScene {
       unit.geometryData.positionPrev.needsUpdate = true;
     }
 
-    if (!this.isBuilderPreviewActive) {
-      for (const cp of this.customPhysics) {
-        this.updateCustomRibs(cp, this.animTime);
-        cp.system.tick(delta * 0.001);
-        cp.position.needsUpdate = true;
-        cp.positionPrev.needsUpdate = true;
-      }
-    }
   }
 
   /**
@@ -1403,32 +1187,6 @@ export class JellyfishMaterialTestScene {
           rib.initialDistances.outer[1] * expansion
         );
       }
-    });
-  }
-
-  private updateCustomRibs(physics: CustomPhysicsRuntime, time: number): void {
-    // Pulse outer rings
-    physics.ribs.forEach(rib => {
-      // Peristaltic Wave: offset phase by v * pulseWave
-      // This makes the pulse 'travel' along the body
-      const localPhase = this.timePhase(time - rib.v * physics.pulseWave);
-      const expansion = 1.0 + localPhase * physics.pulseAmplitude;
-
-      rib.constraint.setDistance(
-        rib.initialDist[0] * expansion,
-        rib.initialDist[1] * expansion
-      );
-    });
-
-    // Pulse radials (center to rim distance)
-    physics.radials.forEach(rad => {
-      const localPhase = this.timePhase(time - rad.v * physics.pulseWave);
-      const expansion = 1.0 + localPhase * physics.pulseAmplitude;
-
-      rad.constraint.setDistance(
-        rad.initialDist[0] * expansion,
-        rad.initialDist[1] * expansion
-      );
     });
   }
 

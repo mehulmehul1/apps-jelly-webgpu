@@ -2,7 +2,7 @@ import { type LookConfig, DEFAULT_LOOK_PRESET } from '../../editor/look-presets'
 import { BodyPlan } from './BodyPlan';
 import type { CreatureSpec } from './CreatureSpec';
 
-export type ArchetypeId =
+export type PresetId =
   | 'combJelly'
   | 'salp'
   | 'siphonophore'
@@ -10,21 +10,26 @@ export type ArchetypeId =
   | 'glassSponge'
   | 'ascidia'
   | 'star'
-  | 'customLab';
+  | 'customLab'
+  | 'discJelly'
+  | 'boxJelly'
+  | 'seaNettle'
+  | 'lobeJelly';
 
-export interface ArchetypePreset {
-  id: ArchetypeId;
+export interface CreaturePreset {
+  id: PresetId;
   name: string;
   spec: CreatureSpec;
   look: Partial<LookConfig>;
 }
 
-export const ARCHETYPES: Record<ArchetypeId, ArchetypePreset> = {
+export const PRESETS: Record<PresetId, CreaturePreset> = {
   combJelly: {
     id: 'combJelly',
     name: 'Comb Jelly',
     spec: {
       id: 'combJelly',
+      archetypeId: 'jellyfish',
       bodyPlan: BodyPlan.CombJelly,
       features: { tail: false, mouth: false, tentacles: false },
       symmetry: { kind: 'radial', order: 8, breaking: 0.12, phase: 0.2 },
@@ -83,6 +88,7 @@ export const ARCHETYPES: Record<ArchetypeId, ArchetypePreset> = {
     name: 'Salp',
     spec: {
       id: 'salp',
+      archetypeId: 'jellyfish',
       // Salp - transparent barrel shape (NOT a tube like glass sponge)
       bodyPlan: BodyPlan.CombJelly,
       features: { tail: false, mouth: false, tentacles: false },
@@ -148,6 +154,7 @@ export const ARCHETYPES: Record<ArchetypeId, ArchetypePreset> = {
     name: 'Siphonophore',
     spec: {
       id: 'siphonophore',
+      archetypeId: 'jellyfish',
       bodyPlan: BodyPlan.Siphonophore,
       features: { tail: true, mouth: true, tentacles: true },
       symmetry: { kind: 'radial', order: 10, breaking: 0.22, phase: 0.3 },
@@ -199,6 +206,7 @@ export const ARCHETYPES: Record<ArchetypeId, ArchetypePreset> = {
     name: 'Anemone Crown',
     spec: {
       id: 'anemone',
+      archetypeId: 'jellyfish',
       bodyPlan: BodyPlan.Medusa,
       features: { tail: false, mouth: false, tentacles: true },
       symmetry: { kind: 'radial', order: 12, breaking: 0.18, phase: 0.0 },
@@ -248,6 +256,7 @@ export const ARCHETYPES: Record<ArchetypeId, ArchetypePreset> = {
     name: 'Glass Sponge',
     spec: {
       id: 'glassSponge',
+      archetypeId: 'jellyfish',
       // Venus' flower basket - tall woven vase
       bodyPlan: BodyPlan.CombJelly,
       features: { tail: false, mouth: false, tentacles: false },
@@ -310,6 +319,7 @@ export const ARCHETYPES: Record<ArchetypeId, ArchetypePreset> = {
     name: 'Ascidia Egg',
     spec: {
       id: 'ascidia',
+      archetypeId: 'jellyfish',
       // Sea squirt - sac-like body with TWO SIPHONS (oral and atrial)
       bodyPlan: BodyPlan.CombJelly,
       features: { tail: false, mouth: false, tentacles: false },
@@ -372,6 +382,7 @@ export const ARCHETYPES: Record<ArchetypeId, ArchetypePreset> = {
     name: 'Echinoderm Star',
     spec: {
       id: 'star',
+      archetypeId: 'jellyfish',
       bodyPlan: BodyPlan.Medusa,
       features: { tail: false, mouth: false, tentacles: false },
       symmetry: { kind: 'radial', order: 5, breaking: 0.08, phase: 0.0 },
@@ -415,11 +426,263 @@ export const ARCHETYPES: Record<ArchetypeId, ArchetypePreset> = {
       post: { bloomStrength: 0.2, bloomRadius: 0.4, bloomThreshold: 0.7 },
     },
   },
+  discJelly: {
+    id: 'discJelly',
+    name: 'Disc Jelly',
+    spec: {
+      id: 'discJelly',
+      archetypeId: 'jellyfish',
+      bodyPlan: BodyPlan.Disc,
+      features: { tail: false, mouth: true, tentacles: true },
+      symmetry: { kind: 'radial', order: 8, breaking: 0.08, phase: 0.0 },
+      crossSection: { kind: 'circle' },
+      spine: { kind: 'none' },
+      geometry: {
+        size: 22,
+        ribsCount: 20,
+        ribRadius: 32,
+        tailRibsCount: 0,
+        tailArmSegments: 20,
+        tailArmSegmentLength: 0.6,
+        tentacleSegments: 28,
+        tentacleSegmentLength: 0.9,
+        tentacleWeightFactor: 0.6,
+      },
+      profiles: {
+        // Flat disc: rapid expansion at base, stays wide, thin top
+        bulb: {
+          kind: 'polyline',
+          points: [
+            [0.0, 0.25],
+            [0.08, 0.85],
+            [0.25, 1.0],
+            [0.75, 0.95],
+            [1.0, 0.3],
+          ],
+        },
+        tail: { kind: 'constant', value: 0 },
+      },
+      emitters: {
+        tentacles: { kind: 'phyllotaxis', groupCount: 10, ribRange: [1, 18], jitter: 0.5, golden: 0.618 },
+      },
+      budget: { maxParticles: 14000 },
+    },
+    look: {
+      // Disc Jelly - pale translucent pink/blue, ethereal moon jelly
+      bulb: {
+        colorA: '#E8D5FF',
+        colorB: '#6B8AFF',
+        opacity: 0.35,
+        patternScale0: 1.0,
+        patternScale1: 1.2,
+        rimBoost: 1.5,
+      },
+      gel: { color: '#D5E8FF', opacity: 0.2 },
+      tail: { opacity: 0.0, scale: 1.0, colorA: '#FFFFFF', colorB: '#000000' },
+      mouth: { opacity: 0.4, scale: 1.5, colorA: '#E8D5FF', colorB: '#6B8AFF' },
+      tentacle: { opacity: 0.2, area: 600, color: '#B8D4FF' },
+      post: { bloomStrength: 0.15, bloomRadius: 0.5, bloomThreshold: 0.6 },
+    },
+  },
+
+  boxJelly: {
+    id: 'boxJelly',
+    name: 'Box Jelly',
+    spec: {
+      id: 'boxJelly',
+      archetypeId: 'jellyfish',
+      bodyPlan: BodyPlan.Box,
+      features: { tail: false, mouth: true, tentacles: true },
+      symmetry: { kind: 'radial', order: 4, breaking: 0.05, phase: 0.0 },
+      crossSection: {
+        kind: 'superformula',
+        rotation: 0.0,
+        twist: 0.15,
+        superformula: { m: 4, a: 1, b: 1, n1: 0.8, n2: 8.0, n3: 8.0 },
+      },
+      spine: { kind: 'none' },
+      surface: {
+        ridges: { count: 4, amplitude: 0.12, tRange: [0.1, 0.95], phase: 0.0 },
+      },
+      geometry: {
+        size: 38,
+        ribsCount: 20,
+        ribRadius: 18,
+        tailRibsCount: 0,
+        tailArmSegments: 30,
+        tailArmSegmentLength: 0.8,
+        tentacleSegments: 100,
+        tentacleSegmentLength: 1.6,
+        tentacleWeightFactor: 1.5,
+      },
+      profiles: {
+        // Columnar with slight taper (box-like)
+        bulb: {
+          kind: 'polyline',
+          points: [
+            [0.0, 0.45],
+            [0.1, 0.8],
+            [0.35, 1.0],
+            [0.7, 0.95],
+            [1.0, 0.55],
+          ],
+        },
+        tail: { kind: 'constant', value: 0 },
+      },
+      emitters: {
+        tentacles: { kind: 'spiral', groupCount: 4, ribRange: [2, 16], pitch: 2.0, jitter: 0.3 },
+      },
+      budget: { maxParticles: 16000, maxTentacleGroups: 4 },
+    },
+    look: {
+      // Box Jelly - nearly invisible pale blue, ghost-like
+      bulb: {
+        colorA: '#C8F0FF',
+        colorB: '#1A6BFF',
+        opacity: 0.2,
+        patternScale0: 1.3,
+        patternScale1: 1.5,
+        rimBoost: 2.0,
+      },
+      gel: { color: '#C8F0FF', opacity: 0.15 },
+      tail: { opacity: 0.0, scale: 1.0, colorA: '#FFFFFF', colorB: '#000000' },
+      mouth: { opacity: 0.3, scale: 2.0, colorA: '#C8F0FF', colorB: '#1A6BFF' },
+      tentacle: { opacity: 0.35, area: 1800, color: '#8DC8FF' },
+      post: { bloomStrength: 0.25, bloomRadius: 0.6, bloomThreshold: 0.5 },
+    },
+  },
+
+  seaNettle: {
+    id: 'seaNettle',
+    name: 'Sea Nettle',
+    spec: {
+      id: 'seaNettle',
+      archetypeId: 'jellyfish',
+      bodyPlan: BodyPlan.Nettle,
+      features: { tail: true, mouth: true, tentacles: true },
+      symmetry: { kind: 'radial', order: 8, breaking: 0.15, phase: 0.1 },
+      crossSection: { kind: 'circle' },
+      spine: { kind: 'none' },
+      surface: {
+        ridges: { count: 8, amplitude: 0.08, tRange: [0.15, 0.8], phase: 0.3 },
+      },
+      geometry: {
+        size: 52,
+        ribsCount: 22,
+        ribRadius: 18,
+        tailRibsCount: 8,
+        tailArmSegments: 80,
+        tailArmSegmentLength: 1.2,
+        tentacleSegments: 140,
+        tentacleSegmentLength: 1.3,
+        tentacleWeightFactor: 1.2,
+      },
+      profiles: {
+        // Tall dome: narrow base, widest at mid-shoulder, domed top
+        bulb: {
+          kind: 'polyline',
+          points: [
+            [0.0, 0.4],
+            [0.1, 0.6],
+            [0.3, 0.9],
+            [0.55, 1.0],
+            [0.8, 0.85],
+            [1.0, 0.3],
+          ],
+        },
+        tail: { kind: 'constant', value: 0.3 },
+      },
+      emitters: {
+        tentacles: { kind: 'phyllotaxis', groupCount: 12, ribRange: [2, 18], jitter: 1.0, golden: 1.0 },
+      },
+      budget: { maxParticles: 60000, maxTentacleGroups: 12 },
+    },
+    look: {
+      // Sea Nettle - warm golden/reddish with white stripes
+      bulb: {
+        colorA: '#FFD699',
+        colorB: '#CC4422',
+        opacity: 0.5,
+        patternScale0: 1.4,
+        patternScale1: 0.8,
+        rimBoost: 1.8,
+      },
+      gel: { color: '#FFD699', opacity: 0.2 },
+      tail: { opacity: 0.6, scale: 18.0, colorA: '#FFE4B5', colorB: '#8B2500' },
+      mouth: { opacity: 0.5, scale: 2.5, colorA: '#FFE4B5', colorB: '#8B2500' },
+      tentacle: { opacity: 0.3, area: 2200, color: '#FFCC88' },
+      post: { bloomStrength: 0.2, bloomRadius: 0.4, bloomThreshold: 0.7 },
+    },
+  },
+
+  lobeJelly: {
+    id: 'lobeJelly',
+    name: 'Lobe Jelly',
+    spec: {
+      id: 'lobeJelly',
+      archetypeId: 'jellyfish',
+      bodyPlan: BodyPlan.LobeJelly,
+      features: { tail: true, mouth: true, tentacles: false },
+      symmetry: { kind: 'radial', order: 4, breaking: 0.2, phase: 0.0 },
+      crossSection: { kind: 'ellipse', xScale: 1.1, zScale: 0.9, rotation: 0.0, twist: 0.3 },
+      spine: { kind: 'none' },
+      surface: {
+        cells: { scale: 2.5, warp: 0.4 },
+      },
+      geometry: {
+        size: 36,
+        ribsCount: 18,
+        ribRadius: 20,
+        tailRibsCount: 6,
+        tailArmSegments: 60,
+        tailArmSegmentLength: 1.0,
+        tentacleSegments: 0,
+      },
+      profiles: {
+        // Bilobed egg: two bulges with a waist dip
+        bulb: {
+          kind: 'polyline',
+          points: [
+            [0.0, 0.35],
+            [0.12, 0.75],
+            [0.25, 0.55],
+            [0.45, 0.85],
+            [0.65, 1.0],
+            [0.85, 0.8],
+            [1.0, 0.45],
+          ],
+        },
+        tail: { kind: 'constant', value: 0 },
+      },
+      emitters: {
+        tentacles: { kind: 'explicit', ribs: [] },
+      },
+      budget: { maxParticles: 8000 },
+    },
+    look: {
+      // Lobe Jelly - deep purple/violet, rich colors
+      bulb: {
+        colorA: '#E0A0FF',
+        colorB: '#4A0080',
+        opacity: 0.45,
+        patternScale0: 1.2,
+        patternScale1: 1.8,
+        rimBoost: 2.2,
+      },
+      gel: { color: '#D5A0FF', opacity: 0.2 },
+      tail: { opacity: 0.55, scale: 14.0, colorA: '#E0A0FF', colorB: '#3A0060' },
+      mouth: { opacity: 0.5, scale: 2.0, colorA: '#E0A0FF', colorB: '#3A0060' },
+      tentacle: { opacity: 0.0, area: 500, color: '#FFFFFF' },
+      post: { bloomStrength: 0.25, bloomRadius: 0.5, bloomThreshold: 0.6 },
+    },
+  },
+
   customLab: {
     id: 'customLab',
     name: 'Custom (Lab)',
     spec: {
       id: 'customLab',
+      archetypeId: 'jellyfish',
       bodyPlan: BodyPlan.CombJelly,
       features: { tail: false, mouth: false, tentacles: false },
       geometry: { size: 40, ribsCount: 16, ribRadius: 15, tailRibsCount: 0, tentacleSegments: 0 },

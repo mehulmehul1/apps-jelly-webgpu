@@ -1,5 +1,5 @@
 import { BodyPlan } from './BodyPlan';
-import type { CreatureSpec } from './CreatureSpec';
+import type { CreatureSpec, JellyfishSpec } from './CreatureSpec';
 import { validateCreatureSpec } from './validate';
 
 export interface Rng {
@@ -23,8 +23,13 @@ function jitter(rng: () => number, v: number, amount: number): number {
  * Intended for "open form" style iteration: small deltas, stable identity.
  */
 export function mutateCreatureSpec(input: CreatureSpec, rngLike: Rng | (() => number)): CreatureSpec {
+  // Only JellyfishSpec supports mutation — pass stubs through unchanged
+  if (input.archetypeId !== 'jellyfish') {
+    return structuredClone(input);
+  }
+
   const rng = typeof rngLike === 'function' ? rngLike : rngLike.next;
-  const next: CreatureSpec = structuredClone(input);
+  const next: JellyfishSpec = structuredClone(input) as JellyfishSpec;
 
   const passes = 1 + Math.floor(rng() * 3);
   for (let i = 0; i < passes; i++) {

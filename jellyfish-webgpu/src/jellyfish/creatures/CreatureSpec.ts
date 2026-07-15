@@ -41,8 +41,12 @@ export interface JellyfishGeometryConfig {
   tailArmWeight: number;
 }
 
-export interface CreatureSpec {
+// ──────────────────────────────────────────
+// Base interface — fields shared by ALL archetypes
+// ──────────────────────────────────────────
+export interface CreatureSpecBase {
   id: string;
+  archetypeId: string;
   bodyPlan: BodyPlan;
 
   /**
@@ -131,6 +135,22 @@ export interface CreatureSpec {
     tentacles?: boolean;
   };
 
+  /** Optional look override applied on top of the current LookConfig */
+  look?: Partial<LookConfig>;
+
+  /** Soft limits to keep creatures in a "pretty" budget */
+  budget?: {
+    maxParticles?: number;
+    maxTentacleGroups?: number;
+  };
+}
+
+// ──────────────────────────────────────────
+// Jellyfish — full spec with ALL existing fields (backward compat)
+// ──────────────────────────────────────────
+export interface JellyfishSpec extends CreatureSpecBase {
+  archetypeId: 'jellyfish';
+
   /** Geometry config (merged with defaults) */
   geometry?: Partial<JellyfishGeometryConfig>;
 
@@ -160,16 +180,26 @@ export interface CreatureSpec {
     cluster?: { radius: number };
     sheet?: { rows: number; cols: number; spacingX: number; spacingY: number };
   };
-
-  /** Optional look override applied on top of the current LookConfig */
-  look?: Partial<LookConfig>;
-
-  /** Soft limits to keep creatures in a "pretty" budget */
-  budget?: {
-    maxParticles?: number;
-    maxTentacleGroups?: number;
-  };
 }
+
+// ──────────────────────────────────────────
+// Fish — minimal stub
+// ──────────────────────────────────────────
+export interface FishSpec extends CreatureSpecBase {
+  archetypeId: 'fish';
+}
+
+// ──────────────────────────────────────────
+// Anemone — minimal stub
+// ──────────────────────────────────────────
+export interface AnemoneSpec extends CreatureSpecBase {
+  archetypeId: 'anemone';
+}
+
+// ──────────────────────────────────────────
+// Discriminated union
+// ──────────────────────────────────────────
+export type CreatureSpec = JellyfishSpec | FishSpec | AnemoneSpec;
 
 export const DEFAULT_GEOMETRY_CONFIG: JellyfishGeometryConfig = {
   size: 40,
@@ -193,7 +223,7 @@ export const DEFAULT_GEOMETRY_CONFIG: JellyfishGeometryConfig = {
   tailArmWeight: 0.5,
 };
 
-export function resolveGeometryConfig(spec: CreatureSpec): JellyfishGeometryConfig {
+export function resolveGeometryConfig(spec: JellyfishSpec): JellyfishGeometryConfig {
   return {
     ...DEFAULT_GEOMETRY_CONFIG,
     ...(spec.geometry ?? {}),

@@ -1,14 +1,14 @@
-export { BodyPlan } from './BodyPlan';
+export { BodyPlan, CREATURE_ARCHETYPE_BY_BODYPLAN } from './BodyPlan';
 export type { RadiusProfileCurve } from './RadiusProfileCurve';
 export { evalRadiusProfile } from './RadiusProfileCurve';
 export type { AttachEmitter } from './AttachEmitters';
 export { resolveTentacleGroups } from './AttachEmitters';
 export type { SpineCurve } from './SpineCurve';
 export { evalSpineOffset } from './SpineCurve';
-export type { CreatureSpec, JellyfishGeometryConfig } from './CreatureSpec';
+export type { CreatureSpecBase, CreatureSpec, JellyfishSpec, FishSpec, AnemoneSpec, JellyfishGeometryConfig } from './CreatureSpec';
 export { DEFAULT_GEOMETRY_CONFIG, resolveGeometryConfig } from './CreatureSpec';
-export type { ArchetypeId, ArchetypePreset } from './presets';
-export { ARCHETYPES } from './presets';
+export type { PresetId, CreaturePreset } from './presets';
+export { PRESETS } from './presets';
 export { validateCreatureSpec } from './validate';
 export { mutateCreatureSpec } from './mutate';
 export type { CreatureRig, CreatureUnit } from './CreatureFactory';

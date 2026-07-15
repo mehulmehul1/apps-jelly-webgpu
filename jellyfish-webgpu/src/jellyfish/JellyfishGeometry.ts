@@ -7,6 +7,7 @@ import {
   resolveGeometryConfig,
   resolveTentacleGroups,
   type CreatureSpec,
+  type JellyfishSpec,
   type JellyfishGeometryConfig,
 } from './creatures';
 
@@ -230,8 +231,9 @@ function tentacleUvs(howMany: number, buffer: number[]): number[] {
   return buffer;
 }
 
-const LEGACY_SPEC: CreatureSpec = {
+const LEGACY_SPEC: JellyfishSpec = {
   id: 'legacy',
+  archetypeId: 'jellyfish',
   bodyPlan: BodyPlan.Medusa,
   features: { tail: true, mouth: true, tentacles: true },
   profiles: {
@@ -253,7 +255,7 @@ export interface JellyfishGeometryOptions {
 }
 
 export class JellyfishGeometry {
-  private readonly spec: CreatureSpec;
+  private readonly spec: JellyfishSpec;
   private readonly cfg: JellyfishGeometryConfig;
   private readonly rng: () => number;
   private readonly tentacleAttachRibs: number[];
@@ -388,7 +390,7 @@ export class JellyfishGeometry {
   }
 
   constructor(spec?: CreatureSpec, options: JellyfishGeometryOptions = {}) {
-    this.spec = spec ?? LEGACY_SPEC;
+    this.spec = (spec?.archetypeId === 'jellyfish' ? spec : LEGACY_SPEC) as JellyfishSpec;
     this.cfg = resolveGeometryConfig(this.spec);
     this.rng = options.rng ?? Math.random;
 

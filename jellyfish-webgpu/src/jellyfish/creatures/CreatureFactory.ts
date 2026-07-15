@@ -1,5 +1,5 @@
 import { BodyPlan } from './BodyPlan';
-import type { CreatureSpec } from './CreatureSpec';
+import type { CreatureSpec, JellyfishSpec } from './CreatureSpec';
 import { resolveGeometryConfig } from './CreatureSpec';
 import { validateCreatureSpec } from './validate';
 
@@ -25,7 +25,7 @@ export interface CreatureRig {
 export function createCreatureRig(input: CreatureSpec): CreatureRig {
   const { spec, warnings } = validateCreatureSpec(input);
 
-  if (spec.bodyPlan !== BodyPlan.Siphonophore) {
+  if (spec.bodyPlan !== BodyPlan.Siphonophore || spec.archetypeId !== 'jellyfish') {
     return {
       spec,
       units: [
@@ -39,7 +39,7 @@ export function createCreatureRig(input: CreatureSpec): CreatureRig {
     };
   }
 
-  const colony = spec.colony ?? { count: 5, spacing: 34, scaleDecay: 0.92 };
+  const colony = (spec as JellyfishSpec).colony ?? { count: 5, spacing: 34, scaleDecay: 0.92 };
   const count = colony.count;
   const spacing = colony.spacing;
   const decay = colony.scaleDecay ?? 0.92;
