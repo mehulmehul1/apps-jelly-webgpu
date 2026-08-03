@@ -85,6 +85,54 @@
     #navlinks a:hover { color: #ffb3d9; border-color: #ffb3d9; }
     #seedlabel { font-size: 11px; color: #5d6a8f; }
 
+    /* ── Filter bar ──────────────────────────── */
+    #filterbar {
+      position: fixed;
+      top: 54px; left: 0; right: 0;
+      display: flex;
+      gap: 18px;
+      align-items: flex-start;
+      padding: 10px 20px;
+      background: linear-gradient(180deg, rgba(3,3,8,0.75), rgba(3,3,8,0));
+      z-index: 8;
+      pointer-events: none;
+    }
+    #filterbar > * { pointer-events: auto; }
+    .filter-group { display: flex; flex-direction: column; gap: 4px; }
+    .filter-label {
+      font-size: 9px;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: #5d6a8f;
+    }
+    .filter-chips { display: flex; flex-wrap: wrap; gap: 4px; max-width: 480px; }
+    .filter-chip {
+      font-family: inherit;
+      font-size: 10px;
+      letter-spacing: 0.06em;
+      padding: 4px 9px;
+      border-radius: 4px;
+      border: 1px solid rgba(120,130,180,0.25);
+      background: transparent;
+      color: #8f99bd;
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+    .filter-chip:hover { color: #e6ecff; background: rgba(255,179,217,0.08); }
+    .filter-chip.active {
+      color: #0a0610;
+      background: #ffb3d9;
+      font-weight: 600;
+      border-color: #ffb3d9;
+    }
+    #filter-count {
+      margin-left: auto;
+      font-size: 11px;
+      color: #7f8bb3;
+      letter-spacing: 0.08em;
+      white-space: nowrap;
+    }
+
     /* ── Bottom hint ─────────────────────────── */
     #hint {
       position: fixed;
@@ -125,6 +173,32 @@
       font-size: 11px;
       color: #7f8bb3;
       margin-bottom: 12px;
+    }
+    #hero-surface {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 5px;
+      margin-bottom: 14px;
+    }
+    .surface-btn {
+      font-family: inherit;
+      font-size: 10px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      padding: 5px 9px;
+      border-radius: 5px;
+      border: 1px solid rgba(120, 130, 180, 0.25);
+      background: transparent;
+      color: #8f99bd;
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+    .surface-btn:hover { color: #e6ecff; background: rgba(255,179,217,0.08); }
+    .surface-btn.active {
+      color: #0a0610;
+      background: #ffb3d9;
+      font-weight: 600;
+      border-color: #ffb3d9;
     }
     .slider-row { margin-bottom: 10px; }
     .slider-head {
@@ -183,11 +257,28 @@
     </div>
   </div>
 
+  <div id="filterbar">
+    <div class="filter-group">
+      <span class="filter-label">order</span>
+      <div class="filter-chips" id="filters-order"></div>
+    </div>
+    <div class="filter-group">
+      <span class="filter-label">section</span>
+      <div class="filter-chips" id="filters-section"></div>
+    </div>
+    <div class="filter-group">
+      <span class="filter-label">surface</span>
+      <div class="filter-chips" id="filters-surface"></div>
+    </div>
+    <div id="filter-count">—</div>
+  </div>
+
   <div id="hint">drag to orbit · scroll to zoom · click a vessel to inspect</div>
 
   <div id="heropanel">
     <div id="hero-title">—</div>
     <div id="hero-sub">—</div>
+    <div id="hero-surface"></div>
     <div id="hero-sliders"></div>
     <div id="hero-actions">
       <button class="ghost-btn" id="hero-reroll">↻ re-roll</button>

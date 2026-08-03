@@ -252,6 +252,7 @@ export const SURFACE_TREATMENTS: SurfaceTreatment[] = [
     tweaks: [
       { key: 'lobeCount', label: 'lobes', min: 3, max: 16, step: 1, fmt: fmtInt },
       { key: 'lobeAmp', label: 'depth', min: 0.02, max: 0.5, step: 0.01, fmt: fmtPlain },
+      { key: 'lobeScale', label: 'radius scale', min: 0.5, max: 2.5, step: 0.05, fmt: fmtPlain },
     ],
   },
 ];
@@ -273,7 +274,7 @@ export interface VesselParams {
   surface: {
     ridges?: { count: number; amplitude: number };
     frill?: { amplitude: number; frequency: number };
-    lobes?: { count: number; amplitude: number };
+    lobes?: { count: number; amplitude: number; radiusScale?: number };
   };
   symmetryOrder: number;
 }
@@ -303,7 +304,9 @@ export function sampleVesselParams(
       sf: { m: 0, n1: 0.35, n2: 0.35, n3: 0.35 },
     },
     surface: {},
-    symmetryOrder: 1 + Math.floor(rng() * 6),
+    // Plain surface = truly plain: symmetry order 1 suppresses the auto-ridge
+    // fallback in getRadialMod, so the blank mold stays perfectly smooth.
+    symmetryOrder: surfaceId === 'plain' ? 1 : 1 + Math.floor(rng() * 6),
   };
 
   switch (sectionId) {
@@ -338,6 +341,7 @@ export function sampleVesselParams(
       params.surface.lobes = {
         count: 3 + Math.floor(rng() * 10),
         amplitude: 0.03 + rng() * 0.35,
+        radiusScale: 0.6 + rng() * 1.2,
       };
       break;
   }

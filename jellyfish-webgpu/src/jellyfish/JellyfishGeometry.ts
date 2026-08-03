@@ -321,6 +321,17 @@ export class JellyfishGeometry {
     return Math.max(0, Math.min(1, t));
   }
 
+  /**
+   * Polynomial smooth-min (Inigo Quilez). Blends two SDF-like values with
+   * blend width k. Union of surfaces uses smooth-max:
+   *   smax(a, b, k) = a + b - smin(a, b, k)
+   */
+  private smin(a: number, b: number, k: number): number {
+    const kk = Math.max(1e-4, k);
+    const h = Math.max(0, Math.min(1, 0.5 + (0.5 * (b - a)) / kk));
+    return b * (1 - h) + a * h - kk * h * (1 - h);
+  }
+
   private getRadialMod(tParam: number): ((angle: number) => number) | undefined {
     const symmetry = this.spec.symmetry;
     const lobes = this.spec.lobes;
@@ -336,15 +347,35 @@ export class JellyfishGeometry {
       amp: number;
       phase: number;
       tRange?: [number, number];
+      /** true => cusped (sharp V-grooves); false => smooth (rounded scallops) */
+      sharp?: boolean;
     }> = [];
 
+    // Lobes are REAL spheres fused onto the body with a smooth-min union.
+    // Each sphere sits on the body surface; the lathe surface becomes the
+    // smooth-max of (body radius, sphere far intersection) per angle.
+    const lobeSpheres: Array<{ cx: number; cy: number; cz: number; r: number }> = [];
     if (lobes && lobes.count > 0 && lobes.amplitude > 0) {
-      lobeLayers.push({
-        count: lobes.count,
-        amp: lobes.amplitude,
-        phase: (lobes.phase ?? 0) + phaseJitter,
-        tRange: lobes.tRange,
-      });
+      const size = this.cfg.size;
+      const yOffset = this.cfg.yOffset;
+      const phase = lobes.phase ?? 0;
+      const rot = (this.spec.crossSection?.rotation ?? 0) + (this.spec.crossSection?.twist ?? 0) * tParam;
+      for (let j = 0; j < lobes.count; j++) {
+        // Distribute around the body (staggered height + angle -> a fused
+        // cluster of marbles rather than a flat ring).
+        const theta = (j / lobes.count) * Math.PI * 2 + phase + rot;
+        const tj = 0.25 + (j / lobes.count) * 0.65;
+        const rBodyAtT = Math.max(1e-3, evalRadiusProfile(this.spec.profiles?.bulb, tj) * this.cfg.ribRadius);
+        const sphR = Math.max(0.4, lobes.amplitude * rBodyAtT * (lobes.radiusScale ?? 1));
+        const dist = rBodyAtT; // center sits ON the surface -> fused, not floating
+        const yPos = size + yOffset - tj * size;
+        lobeSpheres.push({
+          cx: Math.cos(theta) * dist,
+          cy: yPos,
+          cz: Math.sin(theta) * dist,
+          r: sphR,
+        });
+      }
     }
 
     if (ridges && ridges.count > 0 && ridges.amplitude > 0) {
@@ -353,6 +384,7 @@ export class JellyfishGeometry {
         amp: ridges.amplitude,
         phase: (ridges.phase ?? 0) + phaseJitter * 0.5,
         tRange: ridges.tRange,
+        sharp: true,
       });
     } else if (!lobes && symmetry?.kind === 'radial' && symmetry.order > 1) {
       // Provide a gentle default ridge set when symmetry is specified.
@@ -373,8 +405,13 @@ export class JellyfishGeometry {
         }
       : undefined;
 
-    const hasAny = lobeLayers.length > 0 || !!fr;
+    const hasAny = lobeLayers.length > 0 || !!fr || lobeSpheres.length > 0;
     if (!hasAny) return undefined;
+
+    // Base body radius at this ring (in world units) — needed to express the
+    // sphere union as a multiplier of the ring radius.
+    const bodyRadius = Math.max(1e-3, evalRadiusProfile(this.spec.profiles?.bulb, tParam) * this.cfg.ribRadius);
+    const yPos = this.cfg.size + this.cfg.yOffset - tParam * this.cfg.size;
 
     return (angle: number) => {
       let m = 1.0;
@@ -384,7 +421,16 @@ export class JellyfishGeometry {
           const [a, b] = layer.tRange;
           if (tParam < a || tParam > b) continue;
         }
-        m *= 1.0 + Math.cos(layer.count * angle + layer.phase) * (layer.amp * ampMul);
+        const base = Math.cos(layer.count * angle + layer.phase);
+        // Lobes push material OUT (smooth scalloped bulges); ridges carve
+        // material IN (thin grooves). Same count, opposite actions:
+        //   lobes  : m *= 1 + amp*cos        -> rounded bumps
+        //   ridges : m *= 1 - amp*max(0,cos)^k -> narrow notches, mold
+        //           untouched between grooves (k high => thin flutes)
+        const wave = layer.sharp
+          ? -Math.pow(Math.max(0, base), 16)
+          : base;
+        m *= 1.0 + wave * (layer.amp * ampMul);
       }
 
       if (fr) {
@@ -392,6 +438,36 @@ export class JellyfishGeometry {
         if (tParam >= a && tParam <= b) {
           m *= 1.0 + Math.sin(fr.freq * angle + fr.phase) * fr.amp;
         }
+      }
+
+      // Lobe spheres: union each sphere with the body via smooth-max of the
+      // radial extents. A ring at height yPos slices each sphere into a
+      // circle of radius h centered at (cx, cz); the ray at absolute angle
+      // `a` (matching ringVertex) hits that circle at its far intersection.
+      if (lobeSpheres.length > 0) {
+        const rot =
+          (this.spec.crossSection?.rotation ?? 0) + (this.spec.crossSection?.twist ?? 0) * tParam;
+        const a = angle + rot;
+        const ca = Math.cos(a);
+        const sa = Math.sin(a);
+        let r = bodyRadius * m; // current body radius at this angle (world units)
+        for (const sph of lobeSpheres) {
+          const dy = yPos - sph.cy;
+          if (Math.abs(dy) >= sph.r) continue; // ring slices clear of this sphere
+          const h = Math.sqrt(Math.max(0, sph.r * sph.r - dy * dy)); // slice radius
+          const dc2 = sph.cx * sph.cx + sph.cz * sph.cz;
+          const dCenter = Math.sqrt(dc2);
+          if (dCenter < 1e-6) continue;
+          const proj = sph.cx * ca + sph.cz * sa; // center projection on ray
+          const disc = proj * proj - dc2 + h * h;
+          if (disc <= 0) continue; // ray misses the sphere slice
+          const ext = proj + Math.sqrt(disc); // far intersection along ray
+          if (ext <= r) continue; // sphere fully inside the body at this angle
+          // smooth-max union: r = smax(r, ext) = r + ext - smin(r, ext, k)
+          const k = Math.max(1e-3, sph.r * 0.45);
+          r = r + ext - this.smin(r, ext, k);
+        }
+        m = r / bodyRadius;
       }
 
       // Controlled imperfection: a subtle low-frequency wobble.

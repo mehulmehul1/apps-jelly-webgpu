@@ -158,6 +158,7 @@ function readTweakValues(
   if (params.surface.lobes) {
     values['lobeCount'] = params.surface.lobes.count;
     values['lobeAmp'] = params.surface.lobes.amplitude;
+    values['lobeScale'] = params.surface.lobes.radiusScale ?? 1;
   }
 
   return values;
@@ -339,6 +340,7 @@ function surfaceTweakTable(surfaceId: SurfaceKind): Tweak[] {
       return [
         { key: 'lobeCount', label: 'lobes', min: 3, max: 16, step: 1 },
         { key: 'lobeAmp', label: 'depth', min: 0.02, max: 0.5, step: 0.01 },
+        { key: 'lobeScale', label: 'radius scale', min: 0.5, max: 2.5, step: 0.05 },
       ];
     default:
       return [];
@@ -365,10 +367,13 @@ function applySurfaceTweak(
       params.surface.frill = { ...(params.surface.frill ?? { amplitude: 0.2 }), frequency: Math.round(v) };
       break;
     case 'lobeCount':
-      params.surface.lobes = { ...(params.surface.lobes ?? { amplitude: 0.2 }), count: Math.round(v) };
+      params.surface.lobes = { ...(params.surface.lobes ?? { amplitude: 0.2, radiusScale: 1 }), count: Math.round(v) };
       break;
     case 'lobeAmp':
-      params.surface.lobes = { ...(params.surface.lobes ?? { count: 8 }), amplitude: v };
+      params.surface.lobes = { ...(params.surface.lobes ?? { count: 8, radiusScale: 1 }), amplitude: v };
+      break;
+    case 'lobeScale':
+      params.surface.lobes = { ...(params.surface.lobes ?? { count: 8, amplitude: 0.2 }), radiusScale: v };
       break;
     default:
       break;

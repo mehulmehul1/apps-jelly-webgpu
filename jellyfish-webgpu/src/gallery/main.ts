@@ -20,7 +20,7 @@ import {
   type VesselIdentity,
   type VesselRequest,
 } from './vesselSampler';
-import { ORDER_FAMILIES, SECTION_FAMILIES, type Tweak } from './vesselCatalog';
+import { ORDER_FAMILIES, SECTION_FAMILIES, SURFACE_TREATMENTS, type Tweak } from './vesselCatalog';
 import { FORM_LAYERS } from './layers';
 import { randomSeed } from './prng';
 
@@ -36,27 +36,102 @@ if (seedLabel) seedLabel.textContent = `seed ${SEED}`;
 const canvas = document.getElementById('gallery-canvas') as HTMLCanvasElement;
 const scene = new VesselScene(canvas, {
   tileSpacing: 118,
-  gridCols: 7,
+  gridCols: 12,
   tileScale: 1,
 });
 
 // ── Grid assembly ──────────────────────────────────────────────────────
 
-/** All vessels on the shelf: every order family × every section kind. */
+/**
+ * All vessels on the shelf: every order family × every section kind ×
+ * every surface treatment = 8 × 3 × 4 = 96 distinct forms.
+ */
 function buildGridDefs(): Array<{ id: string; label: string; spec: ReturnType<typeof sampleVesselSpec>['spec'] }> {
   const defs: Array<{ id: string; label: string; spec: ReturnType<typeof sampleVesselSpec>['spec'] }> = [];
   for (const order of ORDER_FAMILIES) {
     for (const section of SECTION_FAMILIES) {
-      const req: VesselIdentity = {
-        orderId: order.id,
-        sectionId: section.id,
-        surfaceId: 'plain',
-      };
-      const { spec } = sampleVesselSpec({ ...req, seed: SEED });
-      defs.push({ id: req.orderId + '::' + req.sectionId, label: vesselLabel(req), spec });
+      for (const surface of SURFACE_TREATMENTS) {
+        const req: VesselIdentity = {
+          orderId: order.id,
+          sectionId: section.id,
+          surfaceId: surface.id,
+        };
+        const { spec } = sampleVesselSpec({ ...req, seed: SEED });
+        defs.push({
+          id: `${req.orderId}::${req.sectionId}::${req.surfaceId}`,
+          label: vesselLabel(req),
+          spec,
+        });
+      }
     }
   }
   return defs;
+}
+
+// ── Filters ────────────────────────────────────────────────────────────
+
+/** Active family sets per axis. Every set starts full (all 96 visible). */
+interface FilterState {
+  order: Set<string>;
+  section: Set<string>;
+  surface: Set<string>;
+}
+
+const filterHosts = {
+  order: document.getElementById('filters-order'),
+  section: document.getElementById('filters-section'),
+  surface: document.getElementById('filters-surface'),
+} as const;
+const filterCount = document.getElementById('filter-count');
+
+const filters: FilterState = {
+  order: new Set(ORDER_FAMILIES.map((o) => o.id)),
+  section: new Set(SECTION_FAMILIES.map((s) => s.id)),
+  surface: new Set(SURFACE_TREATMENTS.map((s) => s.id)),
+};
+
+/** Rebuild the filter chips from the active set state. */
+function renderFilters(): void {
+  const renderGroup = (
+    host: HTMLElement | null,
+    axis: keyof FilterState,
+    items: Array<{ id: string; label: string }>,
+  ): void => {
+    if (!host) return;
+    host.innerHTML = '';
+    for (const item of items) {
+      const chip = document.createElement('button');
+      chip.className = 'filter-chip' + (filters[axis].has(item.id) ? ' active' : '');
+      chip.textContent = item.label;
+      chip.title = `show / hide ${item.label} vessels`;
+      chip.addEventListener('click', () => {
+        const set = filters[axis];
+        if (set.has(item.id)) set.delete(item.id);
+        else set.add(item.id);
+        renderFilters();
+        refreshGrid();
+      });
+      host.appendChild(chip);
+    }
+  };
+  renderGroup(filterHosts.order, 'order', ORDER_FAMILIES);
+  renderGroup(filterHosts.section, 'section', SECTION_FAMILIES);
+  renderGroup(filterHosts.surface, 'surface', SURFACE_TREATMENTS);
+}
+
+/** Rebuild the grid from the active filters. */
+function refreshGrid(): void {
+  const defs = buildGridDefs().filter((d) => {
+    const [orderId, sectionId, surfaceId] = d.id.split('::');
+    return (
+      filters.order.has(orderId) &&
+      filters.section.has(sectionId) &&
+      filters.surface.has(surfaceId)
+    );
+  });
+  scene.setTiles(defs);
+  scene.viewGrid();
+  if (filterCount) filterCount.textContent = `${defs.length} / ${ORDER_FAMILIES.length * SECTION_FAMILIES.length * SURFACE_TREATMENTS.length} forms`;
 }
 
 // ── Layer bar ──────────────────────────────────────────────────────────
@@ -88,6 +163,7 @@ let heroState: HeroState | null = null;
 const heroPanel = document.getElementById('heropanel');
 const heroTitle = document.getElementById('hero-title');
 const heroSub = document.getElementById('hero-sub');
+const heroSurface = document.getElementById('hero-surface');
 const heroSliders = document.getElementById('hero-sliders');
 const heroReroll = document.getElementById('hero-reroll');
 const heroBack = document.getElementById('hero-back');
@@ -104,8 +180,12 @@ function rebuildHeroTile(): void {
 }
 
 function openHero(tile: GalleryTile): void {
-  const [orderId, sectionId] = tile.id.split('::') as [string, VesselRequest['sectionId']];
-  const identity: VesselRequest = { orderId, sectionId, surfaceId: 'plain', seed: SEED };
+  const [orderId, sectionId, surfaceId] = tile.id.split('::') as [
+    string,
+    VesselRequest['sectionId'],
+    VesselRequest['surfaceId'],
+  ];
+  const identity: VesselRequest = { orderId, sectionId, surfaceId, seed: SEED };
   const initial = sampleVesselSpec(identity, undefined);
 
   heroState = {
@@ -117,21 +197,55 @@ function openHero(tile: GalleryTile): void {
   if (heroTitle) heroTitle.textContent = vesselLabel(identity);
   if (heroSub) heroSub.textContent = vesselDescription(identity);
 
-  // Rebuild slider DOM: order tweaks, then section tweaks.
-  if (heroSliders) {
-    heroSliders.innerHTML = '';
-    const order = ORDER_FAMILIES.find((o) => o.id === orderId);
-    if (order && order.tweaks.length > 0) {
-      heroSliders.appendChild(sliderGroup('silhouette', order.tweaks));
-    }
-    const section = SECTION_FAMILIES.find((s) => s.id === sectionId);
-    if (section && section.tweaks.length > 0) {
-      heroSliders.appendChild(sliderGroup('cross-section', section.tweaks));
-    }
-  }
+  renderSurfacePicker();
+  renderHeroSliders();
 
   heroPanel?.classList.add('visible');
   scene.viewTile(tile);
+}
+
+/** Surface treatment picker (plain / ridges / frill / lobes). */
+function renderSurfacePicker(): void {
+  if (!heroSurface || !heroState) return;
+  heroSurface.innerHTML = '';
+  for (const surface of SURFACE_TREATMENTS) {
+    const btn = document.createElement('button');
+    btn.className = 'surface-btn' + (surface.id === heroState.identity.surfaceId ? ' active' : '');
+    btn.textContent = surface.label;
+    btn.title = surface.description;
+    btn.addEventListener('click', () => setSurface(surface.id));
+    heroSurface.appendChild(btn);
+  }
+}
+
+/** Rebuild slider DOM: order tweaks, then section tweaks, then surface tweaks. */
+function renderHeroSliders(): void {
+  if (!heroSliders || !heroState) return;
+  heroSliders.innerHTML = '';
+  const { orderId, sectionId, surfaceId } = heroState.identity;
+  const order = ORDER_FAMILIES.find((o) => o.id === orderId);
+  if (order && order.tweaks.length > 0) {
+    heroSliders.appendChild(sliderGroup('silhouette', order.tweaks));
+  }
+  const section = SECTION_FAMILIES.find((s) => s.id === sectionId);
+  if (section && section.tweaks.length > 0) {
+    heroSliders.appendChild(sliderGroup('cross-section', section.tweaks));
+  }
+  const surface = SURFACE_TREATMENTS.find((s) => s.id === surfaceId);
+  if (surface && surface.tweaks.length > 0) {
+    heroSliders.appendChild(sliderGroup('surface', surface.tweaks));
+  }
+}
+
+/** Switch the hero vessel's surface treatment (keeps order + section). */
+function setSurface(surfaceId: VesselRequest['surfaceId']): void {
+  if (!heroState || heroState.identity.surfaceId === surfaceId) return;
+  heroState.identity = { ...heroState.identity, surfaceId };
+  const fresh = sampleVesselSpec(heroState.identity, undefined);
+  heroState.currentTweaks = { ...fresh.values };
+  renderSurfacePicker();
+  renderHeroSliders();
+  rebuildHeroTile();
 }
 
 function closeHero(): void {
@@ -192,8 +306,11 @@ function defaultFmt(v: number): string {
 // ── Wiring ─────────────────────────────────────────────────────────────
 
 scene.setOnSelect((tile) => {
-  if (tile) openHero(tile);
-  else closeHero();
+  // Empty-canvas clicks do nothing — only the back button leaves the hero.
+  if (!tile) return;
+  // Re-clicking the vessel you're already inspecting keeps your tweaks.
+  if (heroState && heroState.tileId === tile.id) return;
+  openHero(tile);
 });
 
 heroReroll?.addEventListener('click', () => {
@@ -220,8 +337,8 @@ async function boot(): Promise<void> {
     document.getElementById('hint')!.textContent = 'WebGPU unavailable — falling back to WebGL.';
   }
 
-  scene.setTiles(buildGridDefs());
-  scene.viewGrid();
+  renderFilters();
+  refreshGrid();
 
   let last = performance.now();
   const loop = (now: number): void => {

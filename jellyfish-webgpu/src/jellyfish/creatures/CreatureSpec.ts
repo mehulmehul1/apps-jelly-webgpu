@@ -9,6 +9,8 @@ export interface RadialLobesSpec {
   count: number;
   /** Amplitude as a fraction of radius (0.0 - 0.6 recommended) */
   amplitude: number;
+  /** Multiplier on each lobe sphere's radius (0.5 - 2.5; 1 = spheres sized by amplitude) */
+  radiusScale?: number;
   /** Phase offset in radians */
   phase?: number;
   /** Where lobes are active along the body, 0..1 (optional) */
