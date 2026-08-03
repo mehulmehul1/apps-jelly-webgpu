@@ -2,12 +2,12 @@ import { type LookConfig, DEFAULT_LOOK_PRESET } from '../../editor/look-presets'
 import { BodyPlan } from './BodyPlan';
 import type { CreatureSpec } from './CreatureSpec';
 import {
-  mackerelPreset, angelfishPreset,
-  clownfishPreset, pufferPreset, neonTetraPreset, moorishIdolPreset,
-} from '../../creatures/presets/fish-presets';
-import {
-  magnificentPreset, bubbleTipPreset, tubePreset,
+  actiniaPreset, metridiumPreset, anthopleuraPreset, edwardsiaPreset,
 } from '../../creatures/presets/anemone-presets';
+import {
+  staghornPreset, seaFanPreset, brainCoralPreset,
+  organPipePreset, tableCoralPreset,
+} from '../../creatures/presets/coral-presets';
 
 export type PresetId =
   // Jellyfish variants
@@ -23,17 +23,17 @@ export type PresetId =
   | 'boxJelly'
   | 'seaNettle'
   | 'lobeJelly'
-  // Fish presets
-  | 'mackerel'
-  | 'angelfish'
-  | 'clownfish'
-  | 'puffer'
-  | 'neonTetra'
-  | 'moorishIdol'
-  // Anemone presets
-  | 'magnificent'
-  | 'bubbleTip'
-  | 'tube';
+  // Anemone presets (biologically accurate species)
+  | 'actinia'
+  | 'metridium'
+  | 'anthopleura'
+  | 'edwardsia'
+  // Coral presets
+  | 'staghorn'
+  | 'seaFan'
+  | 'brainCoral'
+  | 'organPipe'
+  | 'tableCoral';
 
 export interface CreaturePreset {
   id: PresetId;
@@ -176,6 +176,7 @@ export const PRESETS: Record<PresetId, CreaturePreset> = {
       archetypeId: 'jellyfish',
       bodyPlan: BodyPlan.Siphonophore,
       features: { tail: true, mouth: true, tentacles: true },
+      tentacleStyle: 'tube',
       symmetry: { kind: 'radial', order: 10, breaking: 0.22, phase: 0.3 },
       spine: { kind: 'none' },
       geometry: {
@@ -579,6 +580,7 @@ export const PRESETS: Record<PresetId, CreaturePreset> = {
       archetypeId: 'jellyfish',
       bodyPlan: BodyPlan.Nettle,
       features: { tail: true, mouth: true, tentacles: true },
+      tentacleStyle: 'tube',
       symmetry: { kind: 'radial', order: 8, breaking: 0.15, phase: 0.1 },
       crossSection: { kind: 'circle' },
       spine: { kind: 'none' },
@@ -712,16 +714,16 @@ export const PRESETS: Record<PresetId, CreaturePreset> = {
     look: DEFAULT_LOOK_PRESET,
   },
 
-  // ── Fish presets ──────────────────────────────────────────────────────
-  mackerel: mackerelPreset,
-  angelfish: angelfishPreset,
-  clownfish: clownfishPreset,
-  puffer: pufferPreset,
-  neonTetra: neonTetraPreset,
-  moorishIdol: moorishIdolPreset,
-
   // ── Anemone presets (real AnemoneArchetype) ───────────────────────────
-  magnificent: magnificentPreset,
-  bubbleTip: bubbleTipPreset,
-  tube: tubePreset,
+  actinia: actiniaPreset,
+  metridium: metridiumPreset,
+  anthopleura: anthopleuraPreset,
+  edwardsia: edwardsiaPreset,
+
+  // ── Coral presets ──────────────────────────────────────────────────────
+  staghorn: staghornPreset,
+  seaFan: seaFanPreset,
+  brainCoral: brainCoralPreset,
+  organPipe: organPipePreset,
+  tableCoral: tableCoralPreset,
 };

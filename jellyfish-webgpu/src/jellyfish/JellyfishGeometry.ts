@@ -46,6 +46,18 @@ export interface TentacleGroup {
   start: number;
 }
 
+export interface TentaclePhysicsConfig {
+  basePosition: [number, number, number];
+  baseTangent: [number, number, number];
+  segments: number;
+  length: number;
+  baseRadius: number;
+  tipRadius: number;
+  radialSegments: number;
+  stiffnessBase: number;
+  stiffnessExponent: number;
+}
+
 export interface JellyfishGeometryData {
   spec: CreatureSpec;
   config: JellyfishGeometryConfig;
@@ -63,6 +75,9 @@ export interface JellyfishGeometryData {
     bulb: number[];
     tail: number[];
     mouth: number[];
+    tentacles: number[];
+    /** Per-tentacle-group face arrays (for 'tube' rendering style) */
+    tentacleGroups: number[][];
   };
   uvs: Float32Array;
   weights: number[];
@@ -86,6 +101,8 @@ export interface JellyfishGeometryData {
   // Position tracking
   position: THREE.BufferAttribute;
   positionPrev: THREE.BufferAttribute;
+  /** TentaclePhysics configs for tube mode (replaces Particulate tentacle chains) */
+  tentaclePhysicsConfigs?: TentaclePhysicsConfig[];
 }
 
 // Helper functions ported from original Geometry.js
@@ -224,13 +241,6 @@ function ribUvs(sv: number, howMany: number, buffer: number[]): number[] {
   return buffer;
 }
 
-function tentacleUvs(howMany: number, buffer: number[]): number[] {
-  for (let i = 0, il = howMany; i < il; i++) {
-    buffer.push(0, 0);
-  }
-  return buffer;
-}
-
 const LEGACY_SPEC: JellyfishSpec = {
   id: 'legacy',
   archetypeId: 'jellyfish',
@@ -266,6 +276,8 @@ export class JellyfishGeometry {
   private links: number[] = [];
   private innerLinks: number[] = [];
   private tentLinks: number[] = [];
+  private tentFaces: number[] = [];
+  private tentGroupFaces: number[][] = [];
   private bulbFaces: number[] = [];
   private tailFaces: number[] = [];
   private mouthFaces: number[] = [];
@@ -275,6 +287,8 @@ export class JellyfishGeometry {
   private tentacles: TentacleGroup[][] = [];
   private ribs: RibData[] = [];
   private tailRibs: RibData[] = [];
+  /** TentaclePhysics configs emitted in tube mode */
+  private tentaclePhysicsConfigs: TentaclePhysicsConfig[] = [];
 
   // Pin indices
   private pinTop = 0;
@@ -808,6 +822,27 @@ export class JellyfishGeometry {
     const count = Math.floor(segments * (0.75 + 0.25 * ratio));
     if (count <= 0) return;
 
+    // ── TentaclePhysics mode (tube) ────────────────────────────────────
+    // Emit articulated skeleton configs instead of Particulate chains.
+    if (this.spec.tentacleStyle === 'tube') {
+      const tentLength = count * this.cfg.tentacleSegmentLength;
+      const baseRadius = Math.max(0.5, rib.radius * 0.25);
+      const tipRadius = Math.max(0.05, baseRadius * 0.03);
+      this.tentaclePhysicsConfigs.push({
+        basePosition: [rib.centerX ?? 0, rib.yPos, rib.centerZ ?? 0],
+        baseTangent: [0, -1, 0],
+        segments: 16,
+        length: tentLength,
+        baseRadius,
+        tipRadius,
+        radialSegments: 8,
+        stiffnessBase: 2.0,
+        stiffnessExponent: 2.0,
+      });
+      return;
+    }
+
+    // ── Curtain / legacy Particulate mode ──────────────────────────────
     for (let i = 0, il = count; i < il; i++) {
       this.createTentacleSegment(groupIndex, i, count, rib);
 
@@ -818,18 +853,42 @@ export class JellyfishGeometry {
       }
     }
 
+    // Generate 3D tube faces between adjacent rings
+    const totalSegments = this.cfg.totalSegments;
+    const groupFaces: number[] = [];
+    for (let i = 1; i < count; i++) {
+      const tent0 = this.tentacles[groupIndex][i - 1];
+      const tent1 = this.tentacles[groupIndex][i];
+      ringFaces(tent0.start, tent1.start, totalSegments, groupFaces);
+    }
+    // Store per-group and merge into tentFaces
+    this.tentGroupFaces.push(groupFaces);
+    for (let i = 0; i < groupFaces.length; i++) {
+      this.tentFaces.push(groupFaces[i]);
+    }
+
     this.attachTentaclesSpine(groupIndex, count);
   }
 
   private createTentacleSegment(groupIndex: number, index: number, total: number, rib: RibData): void {
     const segments = this.cfg.totalSegments;
-    const radius = rib.radius * (0.25 * Math.sin(index * 0.25) + 0.5);
+    const isTube = this.spec.tentacleStyle === 'tube';
+    const t = total > 1 ? index / (total - 1) : 0;
+    const radius = isTube
+      // Tube mode: thick solid arm with aggressive taper
+      // Base ~1.5× rib radius, exponential falloff toward tip
+      ? rib.radius * (1.5 * Math.pow(Math.max(0, 1 - t), 0.7))
+      // Curtain mode: original thin sinusoidal strands
+      : rib.radius * (0.25 * Math.sin(index * 0.25) + 0.5);
     const yPos = -index * this.cfg.tentacleSegmentLength + this.cfg.yOffset;
     const start = this.verts.length / 3;
     const weight = tentacleWeight(index / total) * this.cfg.tentacleWeightFactor;
 
     circle(segments, radius, yPos, this.verts, rib.centerX ?? 0, rib.centerZ ?? 0);
-    tentacleUvs(segments, this.uvs);
+    // Proper UVs for mesh rendering: u=circumference, v=length
+    for (let j = 0; j < segments; j++) {
+      this.uvs.push(j / segments, total > 1 ? index / (total - 1) : 0.5);
+    }
     this.queueWeights(start, segments, weight);
 
     if (index === 0) {
@@ -883,7 +942,11 @@ export class JellyfishGeometry {
 
     this.queueConstraints(tentacle);
     this.addLinks(tentacle.indices, this.tentLinks);
-    this.addLinks(tentacle.indices, this.innerLinks);
+    // In tube mode, don't add tentacle links to innerLines so the constraint
+    // network isn't visible as faint lines — keeps tubes visually separate
+    if (this.spec.tentacleStyle !== 'tube') {
+      this.addLinks(tentacle.indices, this.innerLinks);
+    }
   }
 
   // ...................................................
@@ -1114,6 +1177,8 @@ export class JellyfishGeometry {
         bulb: this.bulbFaces,
         tail: this.tailFaces,
         mouth: this.mouthFaces,
+        tentacles: this.tentFaces,
+        tentacleGroups: this.tentGroupFaces,
       },
       uvs: uvsArray,
       weights: this.weights,
@@ -1135,6 +1200,9 @@ export class JellyfishGeometry {
       },
       position,
       positionPrev,
+      tentaclePhysicsConfigs: this.tentaclePhysicsConfigs.length > 0
+        ? this.tentaclePhysicsConfigs
+        : undefined,
     };
   }
 

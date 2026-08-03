@@ -163,6 +163,9 @@ export interface JellyfishSpec extends CreatureSpecBase {
   /** Optional radial lobes (comb jelly ridges, frills) */
   lobes?: RadialLobesSpec;
 
+  /** Tentacle rendering style: 'curtain' = one merged mesh, 'tube' = separate meshes per group */
+  tentacleStyle?: 'curtain' | 'tube';
+
   /** Attachment emitter specs (first-class) */
   emitters?: {
     tentacles?: AttachEmitter;
@@ -179,55 +182,6 @@ export interface JellyfishSpec extends CreatureSpecBase {
     helix?: { radius: number; turns: number };
     cluster?: { radius: number };
     sheet?: { rows: number; cols: number; spacingX: number; spacingY: number };
-  };
-}
-
-// ── Fish-specific types ─────────────────────────────────────────────
-
-export interface FishFinConfig {
-  /** Fin type determines attachment + shape logic */
-  kind: 'dorsal' | 'pectoral' | 'caudal' | 'anal' | 'pelvic';
-  /** Which vertebra (0..1 along body) the fin attaches to */
-  attachmentT: number;
-  /** Fin span (width) */
-  span: number;
-  /** Fin height (protrusion from body) */
-  height: number;
-  /** Along-body extent in vertebra units */
-  length: number;
-  /** Flutter frequency multiplier (1 = same as body undulation) */
-  flutterSpeed?: number;
-  /** Flutter amplitude relative to fin size */
-  flutterAmplitude?: number;
-}
-
-// ──────────────────────────────────────────
-// Fish — bilateral vertebra topology
-// ──────────────────────────────────────────
-export interface FishSpec extends CreatureSpecBase {
-  archetypeId: 'fish';
-  bodyPlan: BodyPlan.Fish;
-
-  /** Number of vertebra rings along the body spine (20-60) */
-  vertebraCount: number;
-  /** Total body length */
-  bodyLength: number;
-  /** Body width at widest point */
-  bodyWidth: number;
-  /** Body depth (height) at deepest point */
-  bodyDepth: number;
-  /** Radius profile along the body (t=0 head, t=1 tail) */
-  bodyProfile: RadiusProfileCurve;
-  /** Fin attachments */
-  fins: FishFinConfig[];
-  /** Optional spine curvature */
-  spineCurve?: SpineCurve;
-  /** Undulation animation parameters */
-  undulation: {
-    amplitude: number;
-    frequency: number;
-    speed: number;
-    finFlutter: number;
   };
 }
 
@@ -263,12 +217,159 @@ export interface AnemoneSpec extends CreatureSpecBase {
   };
   /** Base disc shape */
   baseShape: 'flat' | 'conical' | 'columnar';
+
+  // ════════════════════════════════════════════════════════════════════
+  // Tier 1: Anatomical Accuracy Extensions
+  // ════════════════════════════════════════════════════════════════════
+
+  /** Mesentery system (internal radial septa) */
+  mesenteries?: {
+    /** Number of mesentery cycles (hexamerous: 6, 12, 24, 48...) */
+    cycles: number;
+    /** How many cycles reach the actinopharynx (typically 1) */
+    perfectCycles: number;
+    /** Retractor muscle morphology */
+    retractorType: 'diffuse' | 'restricted' | 'circumscribed' | 'palmate';
+    /** Mesogleal thickness fraction (0.0-1.0) */
+    mesoglealThickness: number;
+  };
+
+  /** Sphincter muscle at oral disc margin */
+  sphincter?: {
+    /** Sphincter type (affects constraint topology & strength) */
+    type: 'endodermal' | 'mesogleal' | 'absent' | 'marginal';
+    /** Contraction strength 0.0-1.0 (constraint tightness) */
+    strength: number;
+    /** Position along column */
+    position: 'margin' | 'capitulum';
+  };
+
+  /** Column region differentiation */
+  columnRegions?: {
+    /** Lower column (stiff, verrucae-bearing) height ratio */
+    scapusHeightRatio: number;
+    /** Mid column (muscular, retractor attachments) height ratio */
+    scapulusHeightRatio: number;
+    /** Upper column (flexible, flexible) height ratio */
+    capitulumHeightRatio: number;
+    /** Adhesive verrucae on scapus */
+    verrucae?: {
+      present: boolean;
+      density: number;    // particles per unit area
+      rows: number;       // longitudinal rows
+    };
+  };
+
+  /** Oral disc anatomy */
+  oralDisc?: {
+    /** Mouth opening width 0.0-1.0 */
+    mouthGape: number;
+    /** Peristome elevation */
+    peristomeHeight: number;
+    /** Number of siphonoglyphs (ciliated grooves) */
+    siphonoglyphs: 1 | 2 | 3;
+    /** Actinopharynx depth (internal) */
+    actinopharynxDepth: number;
+  };
+
+  /** Acontia (defensive thread organs) */
+  acontia?: {
+    present: boolean;
+    /** Number of cinclide rows on column */
+    cinclideRows: number;
+    /** Nematocyst density on acontia */
+    nematocystDensity: number;
+    /** Ejection force multiplier */
+    ejectionForce: number;
+  };
+}
+
+// ──────────────────────────────────────────
+// Coral — branching particle-spring colony
+// ──────────────────────────────────────────
+export interface CoralSpec extends CreatureSpecBase {
+  archetypeId: 'coral';
+  bodyPlan: BodyPlan.Coral;
+
+  /** Branching growth parameters */
+  growth: {
+    /** Maximum branching depth (3-8) */
+    maxGenerations: number;
+    /** Total branch count cap */
+    maxBranches: number;
+    /** Length of each branch segment in world units */
+    segmentLength: number;
+    /** Bifurcation angle in radians */
+    bifurcationAngle: number;
+    /** How strongly branches bend toward light (0-1) */
+    phototropism: number;
+    /** Random noise in growth direction (0-1) */
+    randomFactor: number;
+  };
+
+  /**
+   * Resource field parameters — Kaandorp & Merks accretive growth model.
+   *
+   * Growth potential at each tip is: c_total = (1-α)·c_nutrient + α·c_light
+   * where c_light is computed from ray-occlusion toward the light source and
+   * c_nutrient is a diffusion-distance proxy from the colony base.
+   *
+   * Branching emerges spontaneously (Merks 2003) when c_total exceeds the
+   * bifurcation threshold — tips well-supplied by the Laplacian resource
+   * field grow faster and bifurcate, while sheltered tips stall.
+   */
+  resources: {
+    /**
+     * Light contribution weight α ∈ [0,1].
+     * 0 = growth driven entirely by nutrient diffusion,
+     * 1 = growth driven entirely by light exposure.
+     */
+    alpha: number;
+    /** Ambient light fraction — minimum light even when occluded. */
+    ambientLight: number;
+    /**
+     * Diffusion length — how far nutrients travel from the base.
+     * Long → thin, open, lacy branching (high Péclet equivalent).
+     * Short → compact, dense, spherical growth (low Péclet equivalent).
+     * Maps to the Merks compactness parameter via Péclet number.
+     */
+    diffusionLength: number;
+    /** Growth rate multiplier G — scales all deposition. */
+    growthRate: number;
+    /**
+     * Resource threshold for spontaneous bifurcation.
+     * Lower = branches split more readily.
+     * The Laplacian instability naturally concentrates resources at
+     * exposed tips, so bifurcation happens even with moderate thresholds.
+     */
+    bifurcationThreshold: number;
+  };
+
+  /** Colony morphology */
+  morphology: {
+    /** Overall growth habit — biases the base growth direction field */
+    growthAxis: 'vertical' | 'fan' | 'hemispherical' | 'encrusting';
+    /** Branch density / compactness (0=open lacy, 1=dense) */
+    compactness: number;
+    /** Base branch thickness in world units */
+    branchThickness: number;
+    /** Taper from base to tip (0=uniform tube, 1=strong taper) */
+    taper: number;
+    /** Particles per branch chain (2-6) */
+    segmentsPerBranch: number;
+  };
+
+  /** Sway animation */
+  sway: {
+    amplitude: number;
+    frequency: number;
+  };
 }
 
 // ──────────────────────────────────────────
 // Discriminated union
 // ──────────────────────────────────────────
-export type CreatureSpec = JellyfishSpec | FishSpec | AnemoneSpec;
+export type CreatureSpec = JellyfishSpec | AnemoneSpec | CoralSpec;
 
 export const DEFAULT_GEOMETRY_CONFIG: JellyfishGeometryConfig = {
   size: 40,

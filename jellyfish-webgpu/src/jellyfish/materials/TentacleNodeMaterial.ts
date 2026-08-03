@@ -17,15 +17,19 @@ import * as THREE from 'three/webgpu';
 import {
   color,
   float,
-  vec3,
   vec4,
+  vec3,
   length,
   mix,
   clamp,
   uniform,
   positionLocal,
+  normalLocal,
+  dot,
+  normalize,
   Fn
 } from 'three/tsl';
+import { InterpolatedStandardMaterial } from './InterpolatedNodeMaterial';
 
 export interface TentacleNodeMaterialParameters {
   /** Base diffuse color (default: 0x997299 - muted purple) */
@@ -42,6 +46,8 @@ export interface TentacleNodeMaterialParameters {
   depthTest?: boolean;
   /** Enable depth writing */
   depthWrite?: boolean;
+  /** Use distance-based glow effect (true=curtain, false=tube solid shading) */
+  useGlow?: boolean;
 }
 
 /**
@@ -51,7 +57,7 @@ export interface TentacleNodeMaterialParameters {
  * to darker colors at the tips. Uses additive blending for an
  * ethereal, bioluminescent effect.
  */
-export class TentacleNodeMaterial extends THREE.LineBasicNodeMaterial {
+export class TentacleNodeMaterial extends InterpolatedStandardMaterial {
   /**
    * Uniform for the diffuse color
    */
@@ -66,11 +72,11 @@ export class TentacleNodeMaterial extends THREE.LineBasicNodeMaterial {
    * Uniform for area (glow intensity factor)
    */
   private areaUniform: ReturnType<typeof uniform>;
-  
+
   /**
-   * Uniform for step progress (interpolation factor 0.0 to 1.0)
+   * Whether to use distance-based glow (curtain) or solid 3D shading (tube)
    */
-  private stepProgressUniform: ReturnType<typeof uniform>;
+  private useGlow: boolean;
 
   constructor(params: TentacleNodeMaterialParameters = {}) {
     // Set up material with normal blending (NOT additive)
@@ -82,49 +88,28 @@ export class TentacleNodeMaterial extends THREE.LineBasicNodeMaterial {
       blending: THREE.NormalBlending,
     });
 
+    this.useGlow = params.useGlow ?? true;
+
     // Initialize uniforms with default values from original Medusae.js
     // Original: tentacle.color = 0x997299, opacity = 0.25, area = 2000
     this.diffuseUniform = uniform(color(params.diffuse ?? 0x997299));
     this.opacityUniform = uniform(float(params.opacity ?? 0.25));
     this.areaUniform = uniform(float(params.area ?? 2000.0));
-    this.stepProgressUniform = uniform(float(0.0));
 
-    // Set up interpolated position node
-    // Mix between previous and current physics positions
-    this.positionNode = this.createInterpolatedPositionNode();
+    // stepProgressUniform + positionNode are inherited from InterpolatedNodeMaterial
 
-    // Set up color node with distance-based illumination
-    this.colorNode = this.createColorNode();
-
-    // Note: LineBasicNodeMaterial doesn't have opacityNode
-    // Opacity is controlled via vertex colors alpha channel
-    // We incorporate alpha into the color node
+    // Set up color node based on mode:
+    // - glow mode (curtain): distance-based illumination with alpha falloff
+    // - tube mode (3D): solid diffuse with normal-based hemisphere shading
+    if (this.useGlow) {
+      this.colorNode = this.createGlowColorNode();
+    } else {
+      this.colorNode = this.createTubeColorNode();
+    }
   }
 
   /**
-   * Create the interpolated position node
-   * Mixes between previous and current physics positions
-   */
-  private createInterpolatedPositionNode() {
-    const prevPosition = Fn(() => {
-      return vec3(
-        float(-1000000.0), // Use positionPrev attribute from geometry
-        float(-1000000.0),
-        float(-1000000.0)
-      );
-    })();
-    
-    // Use mix with the step progress uniform
-    // The actual attributes will be resolved at runtime
-    return mix(
-      prevPosition,
-      positionLocal,
-      this.stepProgressUniform
-    );
-  }
-
-  /**
-   * Create the color node with distance-based illumination
+   * Create the color node for curtain mode (distance-based glow)
    * 
    * Formula from original shader:
    *   centerDist = length(position)  [local space distance from origin]
@@ -132,7 +117,7 @@ export class TentacleNodeMaterial extends THREE.LineBasicNodeMaterial {
    *   finalColor = mix(white, diffuse, clamp(illumination, 0.0, 1.25))
    *   alpha = clamp(opacity * illumination * illumination, 0.0, opacity)
    */
-  private createColorNode() {
+  private createGlowColorNode() {
     return Fn(() => {
       // Calculate distance from center in local space
       // positionLocal is the interpolated position
@@ -159,6 +144,13 @@ export class TentacleNodeMaterial extends THREE.LineBasicNodeMaterial {
         clampedIllumination
       );
       
+      // Add simple hemisphere lighting for 3D tube shading
+      // Uses the computed vertex normal to darken one side and lighten the other
+      const lightDir = normalize(vec3(0.3, 0.8, 0.5));
+      const ndotl = dot(normalLocal, lightDir).mul(0.5).add(0.5);
+      const darkColor = finalColor.mul(float(0.4));
+      const shadedColor = mix(darkColor, finalColor, ndotl);
+      
       // Calculate alpha with squared falloff for softness
       // Alpha = opacity * illumination², clamped to [0, opacity]
       const opacity = this.opacityUniform;
@@ -167,25 +159,31 @@ export class TentacleNodeMaterial extends THREE.LineBasicNodeMaterial {
         .mul(illumination)
         .clamp(float(0.0), opacity);
       
-      // Return as vec4 with alpha
-      return vec4(finalColor, alpha);
+      // Return as vec4 with alpha and shading
+      return vec4(shadedColor, alpha);
     })();
   }
 
   /**
-   * Update the interpolation step progress
-   * @param progress - Interpolation factor from 0.0 (previous) to 1.0 (current)
+   * Create the color node for tube mode (solid 3D shading)
+   * 
+   * No distance-based glow — uses fixed color with normal-based
+   * hemisphere lighting for visible 3D tube volume.
    */
-  setStepProgress(progress: number): void {
-    const clamped = Math.max(0, Math.min(1, progress));
-    (this.stepProgressUniform as unknown as { value: number }).value = clamped;
-  }
+  private createTubeColorNode() {
+    return Fn(() => {
+      // Base color (no distance glow — use diffuse directly)
+      const baseColor = this.diffuseUniform;
+      const baseOpacity = this.opacityUniform;
 
-  /**
-   * Get the current interpolation progress value
-   */
-  getStepProgress(): number {
-    return (this.stepProgressUniform as unknown as { value: number }).value;
+      // Hemisphere lighting so tubes look properly 3D
+      const lightDir = normalize(vec3(0.3, 0.8, 0.5));
+      const ndotl = dot(normalLocal, lightDir).mul(0.5).add(0.5);
+      const darkColor = baseColor.mul(float(0.35));
+      const litColor = mix(darkColor, baseColor, ndotl);
+
+      return vec4(litColor, baseOpacity);
+    })();
   }
 
   /**

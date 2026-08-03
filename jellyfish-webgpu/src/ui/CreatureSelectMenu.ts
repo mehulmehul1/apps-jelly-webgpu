@@ -15,6 +15,7 @@ const ARCHETYPE_LABELS: Record<string, string> = {
   jellyfish: 'Jellyfish',
   fish: 'Fish',
   anemone: 'Anemone',
+  coral: 'Coral',
 };
 
 /** Group preset IDs by their archetype, preserving insertion order. */

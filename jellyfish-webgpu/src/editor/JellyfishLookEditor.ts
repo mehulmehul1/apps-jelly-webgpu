@@ -173,8 +173,7 @@ export class JellyfishLookEditor {
   }
 
   public refresh(): void {
-    // Tweakpane versions/types can drift; refresh exists at runtime.
-    (this.pane as any).refresh?.();
+    this.pane.refresh();
   }
 
   public dispose(): void {

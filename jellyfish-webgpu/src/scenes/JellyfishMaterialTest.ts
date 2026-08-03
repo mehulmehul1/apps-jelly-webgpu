@@ -43,7 +43,7 @@ import { CreatureSelectMenu } from '../ui/CreatureSelectMenu';
 import { getArchetype } from '../creatures/archetypes/archetypeRegistry';
 import '../creatures/archetypes/JellyfishArchetype';
 import '../creatures/archetypes/AnemoneArchetype';
-import '../creatures/archetypes/FishArchetype';
+import '../creatures/archetypes/CoralArchetype';
 import type {
   CreatureArchetype,
   BodyData,
@@ -438,11 +438,19 @@ export class JellyfishMaterialTestScene {
       // Jellyfish units have bulb/gel/tail/mouth/tentacle materials to dispose.
       // Fish and Anemone use inline MeshPhysicalMaterial — no separate material refs.
       if (this.archetype?.id === 'jellyfish') {
-        unit.bulbMaterial?.dispose();
-        unit.gelMaterial?.dispose();
-        unit.tailMaterial?.dispose();
-        unit.mouthMaterial?.dispose();
-        unit.tentacleMaterial?.dispose();
+        (unit as any).bulbMaterial?.dispose();
+        (unit as any).gelMaterial?.dispose();
+        (unit as any).tailMaterial?.dispose();
+        (unit as any).mouthMaterial?.dispose();
+        (unit as any).tentacleMaterial?.dispose();
+      }
+      // Coral uses BulbNodeMaterial, GelNodeMaterial, InterpolatedPhysicalMaterial
+      if (this.archetype?.id === 'coral') {
+        (unit as any).bulbMaterial?.dispose();
+        (unit as any).gelMaterial?.dispose();
+        if ((unit as any).tentMaterial) {
+          (unit as any).tentMaterial.dispose();
+        }
       }
 
       unit.group.traverse((child) => {
@@ -527,6 +535,11 @@ export class JellyfishMaterialTestScene {
 
     if (!success) {
       throw new Error('Failed to initialize renderer');
+    }
+
+    // Expose the underlying Three.js renderer for archetypes that need GPU compute
+    if (this.renderer.getIsWebGPU()) {
+      (window as any).__webgpurenderer = this.renderer.getRenderer();
     }
 
     // Setup scene
@@ -646,7 +659,18 @@ export class JellyfishMaterialTestScene {
     // Handle resize
     window.addEventListener('resize', this.onResize.bind(this));
 
-    const totalParticles = this.units.reduce((sum, u) => sum + u.geometryData.system.positions.length / 3, 0);
+    const totalParticles = this.units.reduce((sum, u) => {
+      // Coral uses surface mesh (no Particulate system); other archetypes use particle systems
+      const system = u.geometryData?.system;
+      if (system?.positions) return sum + system.positions.length / 3;
+      // Fallback: count vertices from mesh geometry
+      const geo = u.geometryData?.meshGeometry;
+      if (geo) {
+        const posAttr = geo.getAttribute('position');
+        return sum + (posAttr ? posAttr.count : 0);
+      }
+      return sum;
+    }, 0);
     console.log(`Material Test Scene initialized:`);
     const at = PRESETS[this.currentPresetId ?? 'combJelly'];
     console.log(`  - Creature: ${at.name} (${at.id})`);
@@ -696,11 +720,52 @@ export class JellyfishMaterialTestScene {
       if (isDragging) {
         this.nudgeFromMouse(e.clientX, e.clientY, 2);
       }
+      // Always update tentacle hover target (even without dragging)
+      this.updateTentacleMouseTarget(e.clientX, e.clientY);
     });
 
     window.addEventListener('mouseup', () => {
       isDragging = false;
     });
+
+    // Clear tentacle target when mouse leaves the canvas
+    this.canvas.addEventListener('mouseleave', () => {
+      this.clearTentacleMouseTarget();
+    });
+  }
+
+  /**
+   * Update tentacle hover target from screen mouse position
+   */
+  private updateTentacleMouseTarget(mouseX: number, mouseY: number): void {
+    const rect = this.canvas.getBoundingClientRect();
+    const x = ((mouseX - rect.left) / rect.width) * 2 - 1;
+    const y = -((mouseY - rect.top) / rect.height) * 2 + 1;
+
+    // Project to approximate world position (same as nudgeFromMouse)
+    const targetX = x * 60;
+    const targetY = y * 60 + (this.creatureGroup?.position.y ?? 20);
+    const worldPos = new THREE.Vector3(targetX, targetY, 0);
+
+    // Apply to all anemone units' tentacle controllers
+    for (const unit of this.units) {
+      const gd = unit.geometryData;
+      if (gd?.tentacleController && typeof gd.tentacleController.setMouseTarget === 'function') {
+        gd.tentacleController.setMouseTarget(worldPos);
+      }
+    }
+  }
+
+  /**
+   * Clear tentacle hover target (mouse left canvas)
+   */
+  private clearTentacleMouseTarget(): void {
+    for (const unit of this.units) {
+      const gd = unit.geometryData;
+      if (gd?.tentacleController && typeof gd.tentacleController.setMouseTarget === 'function') {
+        gd.tentacleController.setMouseTarget(null);
+      }
+    }
   }
 
   /**
@@ -862,8 +927,26 @@ export class JellyfishMaterialTestScene {
         unit.tentacleMaterial?.setOpacity(config.tentacle.opacity);
         unit.tentacleMaterial?.setArea(config.tentacle.area);
       }
+    } else if (this.archetype?.id === 'coral') {
+      for (const unit of this.units) {
+        const u = unit as any;
+        u.bulbMaterial?.setDiffuse(this.colorFromHex(config.bulb.colorA));
+        u.bulbMaterial?.setDiffuseB(this.colorFromHex(config.bulb.colorB));
+        u.bulbMaterial?.setOpacity(config.bulb.opacity);
+        u.bulbMaterial?.setPatternScale0(config.bulb.patternScale0);
+        u.bulbMaterial?.setPatternScale1(config.bulb.patternScale1);
+        u.bulbMaterial?.setRimBoost(config.bulb.rimBoost);
+
+        u.gelMaterial?.setDiffuse(this.hexToNumber(config.gel.color));
+        u.gelMaterial?.updateOpacity(config.gel.opacity);
+
+        if (u.tentMaterial) {
+          u.tentMaterial.setDiffuse?.(this.colorFromHex(config.tentacle.color));
+          u.tentMaterial.setOpacity?.(config.tentacle.opacity);
+        }
+      }
     } else {
-      // Non-jellyfish archetypes still consume the same preset palette.
+      // Fish and Anemone use inline MeshPhysicalMaterial — no separate material refs.
       for (const unit of this.units) {
         const surface = unit.bodyMaterial ?? unit.stalkMaterial;
         if (surface) {
@@ -929,7 +1012,15 @@ export class JellyfishMaterialTestScene {
         unit.tentacleMaterial?.setStepProgress(stepProgress);
       }
     } else if (this.archetype?.id === 'anemone') {
-      for (const unit of this.units) unit.tentMaterial?.setStepProgress(stepProgress);
+      for (const unit of this.units) (unit as any).tentMaterial?.setStepProgress(stepProgress);
+    } else if (this.archetype?.id === 'coral') {
+      for (const unit of this.units) {
+        const u = unit as any;
+        u.bulbMaterial?.setTime(time);
+        u.bulbMaterial?.setStepProgress(stepProgress);
+        u.gelMaterial?.setStepProgress(stepProgress);
+        u.tentMaterial?.setTime?.(time);
+      }
     }
 
     // Update dust time (shared, archetype-independent)
@@ -1048,7 +1139,16 @@ export class JellyfishMaterialTestScene {
       this.stepOverlay.update(
         this.interpolation.getStepProgress(),
         physicsFPS || 30,
-        this.units.reduce((sum, u) => sum + u.geometryData.system.positions.length / 3, 0)
+        this.units.reduce((sum, u) => {
+          const system = u.geometryData?.system;
+          if (system?.positions) return sum + system.positions.length / 3;
+          const geo = u.geometryData?.meshGeometry;
+          if (geo) {
+            const posAttr = geo.getAttribute('position');
+            return sum + (posAttr ? posAttr.count : 0);
+          }
+          return sum;
+        }, 0)
       );
     }
   }

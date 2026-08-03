@@ -26,10 +26,13 @@ import {
   GelNodeMaterial,
   InterpolatedLineMaterial,
 } from '../../jellyfish/materials';
-import { CreatureSpec } from '../../jellyfish/creatures/CreatureSpec';
+import { CreatureSpec, JellyfishSpec } from '../../jellyfish/creatures/CreatureSpec';
 import { createCreatureRig } from '../../jellyfish/creatures';
 import { LookConfig } from '../../editor/look-presets';
 import { registerArchetype } from './archetypeRegistry';
+import {
+  createTentacleController,
+} from './TentaclePhysics';
 
 export const jellyfishArchetype: CreatureArchetype = {
   id: 'jellyfish',
@@ -95,14 +98,26 @@ export const jellyfishArchetype: CreatureArchetype = {
       mouthMaterial.setScale(3);
       mouthMaterial.updateOpacity(0.65);
 
+      const tentacleStyle = (gd.spec as JellyfishSpec).tentacleStyle ?? 'curtain';
       const tentacleMaterial = new TentacleNodeMaterial({
         color: 0x997299,
         transparent: true,
         opacity: 0.25,
         depthTest: true,
         depthWrite: false,
+        useGlow: tentacleStyle !== 'tube',
       });
       tentacleMaterial.setArea(2000);
+      const tubeTentacleMaterial = tentacleStyle === 'tube'
+        ? new TentacleNodeMaterial({
+            color: 0x997299,
+            transparent: true,
+            opacity: 0.25,
+            depthTest: true,
+            depthWrite: false,
+            useGlow: false,
+          })
+        : tentacleMaterial;
 
       // ── Mesh group ──
       const group = new THREE.Group();
@@ -158,15 +173,67 @@ export const jellyfishArchetype: CreatureArchetype = {
         group.add(mouthMesh);
       }
 
-      // Tentacle lines
-      if (gd.links.tentacles.length > 0) {
-        const tentGeo = new THREE.BufferGeometry();
-        tentGeo.setAttribute('position', gd.position);
-        tentGeo.setAttribute('positionPrev', gd.positionPrev);
-        tentGeo.setAttribute('normal', gd.geometry.attributes.normal);
-        tentGeo.setIndex(gd.links.tentacles);
-        group.add(new THREE.LineSegments(tentGeo, tentacleMaterial));
+      // ── TentaclePhysics tubes (articulated skeleton, replaces Particulate tentacles) ──
+      const tentaclePhysicsMeshes: THREE.Mesh[] = [];
+      if (gd.tentaclePhysicsConfigs && gd.tentaclePhysicsConfigs.length > 0) {
+        const controllerConfigs = gd.tentaclePhysicsConfigs.map((cfg, i) => ({
+          id: `tentacle_${i}`,
+          basePosition: new THREE.Vector3(...cfg.basePosition),
+          baseTangent: new THREE.Vector3(...cfg.baseTangent).normalize(),
+          profileKey: 'actinia' as any,
+          params: {
+            segments: cfg.segments,
+            length: cfg.length,
+            baseRadius: cfg.baseRadius,
+            tipRadius: cfg.tipRadius,
+            stiffnessBase: cfg.stiffnessBase,
+            stiffnessExponent: cfg.stiffnessExponent,
+            radialSegments: cfg.radialSegments,
+          },
+        }));
+        const tentacleController = createTentacleController(controllerConfigs);
+        (gd as any).tentacleController = tentacleController;
+
+        const meshes = tentacleController.getMeshes();
+        for (const meshData of meshes) {
+          const tentGeo = new THREE.BufferGeometry();
+          tentGeo.setAttribute('position', new THREE.BufferAttribute(meshData.positions, 3));
+          tentGeo.setAttribute('positionPrev', new THREE.BufferAttribute(meshData.positionsPrev, 3));
+          tentGeo.setAttribute('uv', new THREE.BufferAttribute(meshData.uvs, 2));
+          tentGeo.setAttribute('normal', new THREE.BufferAttribute(meshData.normals, 3));
+          tentGeo.setIndex(new THREE.BufferAttribute(meshData.indices, 1));
+          const tentMesh = new THREE.Mesh(tentGeo, tubeTentacleMaterial);
+          group.add(tentMesh);
+          tentaclePhysicsMeshes.push(tentMesh);
+        }
+        (gd as any).tentaclePhysicsMeshes = tentaclePhysicsMeshes;
+      } else {
+        // ── Legacy tentacle tubes: 'curtain' (one merged mesh) vs 'tube' (per-group meshes) ──
+        if (tentacleStyle === 'tube' && gd.faces.tentacleGroups.length > 0) {
+        // Each tentacle group as its own individual tube mesh
+        for (const groupFaces of gd.faces.tentacleGroups) {
+          if (groupFaces.length === 0) continue;
+          const tentGeo = new THREE.BufferGeometry();
+          tentGeo.setAttribute('position', gd.position);
+          tentGeo.setAttribute('positionPrev', gd.positionPrev);
+          tentGeo.setAttribute('uv', new THREE.BufferAttribute(gd.uvs, 2));
+          tentGeo.setIndex(groupFaces);
+          tentGeo.computeVertexNormals();
+          group.add(new THREE.Mesh(tentGeo, tubeTentacleMaterial));
+        }
+      } else {
+        // Curtain: one merged mesh containing all tentacle groups
+        if (gd.faces.tentacles.length > 0) {
+          const tentGeo = new THREE.BufferGeometry();
+          tentGeo.setAttribute('position', gd.position);
+          tentGeo.setAttribute('positionPrev', gd.positionPrev);
+          tentGeo.setAttribute('uv', new THREE.BufferAttribute(gd.uvs, 2));
+          tentGeo.setIndex(gd.faces.tentacles);
+          tentGeo.computeVertexNormals();
+          group.add(new THREE.Mesh(tentGeo, tentacleMaterial));
+        }
       }
+    }
 
       // LinesFore - smooth curved lines
       if (gd.links.linesFore.length > 0) {
@@ -273,6 +340,37 @@ export const jellyfishArchetype: CreatureArchetype = {
 
       // Tick physics
       gd.system.tick(delta * 0.001);
+
+      // Update TentaclePhysics articulated skeletons (for tube mode)
+      const tentacleController = (gd as any).tentacleController;
+      if (tentacleController) {
+        tentacleController.update(delta * 0.001, time);
+        const meshes = tentacleController.getMeshes();
+        const tentacleMeshes = (gd as any).tentaclePhysicsMeshes;
+        if (tentacleMeshes && meshes.length === tentacleMeshes.length) {
+          for (let i = 0; i < meshes.length; i++) {
+            const mesh = tentacleMeshes[i];
+            const meshData = meshes[i];
+            if (mesh && mesh.geometry) {
+              const posAttr = mesh.geometry.getAttribute('position');
+              const posPrevAttr = mesh.geometry.getAttribute('positionPrev');
+              const normAttr = mesh.geometry.getAttribute('normal');
+              if (posAttr && posPrevAttr) {
+                // Copy current position to positionPrev for interpolation
+                posPrevAttr.copyArray(posAttr.array);
+                posPrevAttr.needsUpdate = true;
+                // Upload new positions
+                posAttr.copyArray(meshData.positions);
+                posAttr.needsUpdate = true;
+              }
+              if (normAttr) {
+                normAttr.copyArray(meshData.normals);
+                normAttr.needsUpdate = true;
+              }
+            }
+          }
+        }
+      }
 
       // Mark buffers for update
       gd.position.needsUpdate = true;

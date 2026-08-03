@@ -16,10 +16,10 @@ export enum BodyPlan {
   Nettle = 'nettle',
   /** Lobe Jelly / Rhizostome: bilobed egg-shaped bell, oral arms, no marginal tentacles */
   LobeJelly = 'lobe_jelly',
-  /** Fish body plan */
-  Fish = 'fish',
   /** Sea anemone body plan */
   Anemone = 'anemone',
+  /** Coral colony body plan */
+  Coral = 'coral',
 }
 
 export const CREATURE_ARCHETYPE_BY_BODYPLAN: Record<BodyPlan, string> = {
@@ -31,7 +31,7 @@ export const CREATURE_ARCHETYPE_BY_BODYPLAN: Record<BodyPlan, string> = {
   [BodyPlan.Box]: 'jellyfish',
   [BodyPlan.Nettle]: 'jellyfish',
   [BodyPlan.LobeJelly]: 'jellyfish',
-  [BodyPlan.Fish]: 'fish',
   [BodyPlan.Anemone]: 'anemone',
+  [BodyPlan.Coral]: 'coral',
 };
 

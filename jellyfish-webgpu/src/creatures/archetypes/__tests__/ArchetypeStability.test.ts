@@ -1,9 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { PRESETS } from '../../../jellyfish/creatures';
-import { fishArchetype } from '../FishArchetype';
 import { anemoneArchetype } from '../AnemoneArchetype';
 
-const archetypes = [fishArchetype, anemoneArchetype] as const;
+const archetypes = [anemoneArchetype] as const;
 
 describe('non-jellyfish archetype stability', () => {
   for (const archetype of archetypes) {
