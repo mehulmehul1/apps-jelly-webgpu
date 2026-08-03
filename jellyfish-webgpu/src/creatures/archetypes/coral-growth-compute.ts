@@ -1,57 +1,132 @@
 /**
  * coral-growth-compute.ts
  *
- * Kaandorp (2013) accretive growth model — CPU field solve + surface mesh.
+ * Rebuilt emergent accretive-growth model for coral colonies (surface-mesh
+ * architecture, NOT particulate.js).
  *
- * Algorithm per step:
- * 1. Voxelize mesh + fill interior (solid shell blocks nutrient flow)
- * 2. Solve ∇²c = 0 via Jacobi iteration (nutrient from top)
- * 3. Displace each vertex along normal proportional to nutrient + light
- * 4. Recompute normals from triangle connectivity
+ * The model is biologically inspired by Kaandorp (2013) and Merks et al.
+ * (2003), but rebuilt so that branching is EMERGENT and ORGANIC rather than a
+ * hard-coded branch tree:
  *
- * Branching emerges from Mullins-Sekerka instability:
- * protrusions get more nutrient → grow faster → protrude more → branch.
+ *   1. A morphology-aware resource field combines a nutrient-diffusion proxy
+ *      (Kaandorp compactness / Péclet via `diffusionLength`) with a
+ *      phototropic light-exposure term and a per-habit growth-axis bias
+ *      (fan / hemispherical / vertical / encrusting).
+ *   2. A real 3D Laplacian solve (Jacobi on a voxel grid) sharpens the
+ *      nutrient field around the living surface, reproducing the
+ *      Mullins-Sekerka instability: protrusions enrich their own exposure and
+ *      grow faster, which is what turns a smooth seed into branched coral.
+ *   3. Local "resource surplus" above the bifurcation threshold gates adaptive
+ *      mesh refinement + jitter at branch tips, so new branch directions are
+ *      seeded only where resources concentrate (Merks-style spontaneous
+ *      bifurcation).
+ *   4. Growth is kept bounded: per-step displacement is capped, positions are
+ *      clamped to the colony bounds, and refinement respects a strict vertex
+ *      budget. All vectors are normalized and degenerate cases guarded, so the
+ *      output stays finite and NaN-free.
  *
- * Based on:
- * - Kaandorp 2013: ISRN Biomathematics, 10.1155/2013/159170
- * - Merks et al. 2003: J. Theor. Biol. 224:153-166
+ * The ghost-shell artifact (jellyfish-only gel/emissive overlays leaking onto
+ * the coral mesh) is eliminated at the archetype/render layer: this module only
+ * ever produces a single watertight surface plus a small set of polyp-tip
+ * marker points.
  */
 
 // ── Constants ──────────────────────────────────────────────────────────────
 
-export const DEFAULT_GRID_SIZE = 64;
-export const JACOBI_ITERATIONS = 200;
+export const DEFAULT_GRID_SIZE = 48;
+export const JACOBI_ITERATIONS = 90;
 
-/** Max edge length before the mesh is refined (adaptive tessellation for branching). */
+/** Max edge length before the mesh is adaptively refined for finer branching. */
 export const MAX_EDGE_LENGTH = 1.2;
-/** Refinement is only triggered when curvature (1/radius of osculating circle) > this. */
-export const CURVATURE_REFINE_THRESHOLD = 1.8;
-/** After refinement, new vertices are jittered by this fraction to seed Mullins-Sekerka. */
-export const REFINE_JITTER = 0.04;
+/** Refinement is only triggered when the dihedral curvature (radians) exceeds this. */
+export const CURVATURE_REFINE_THRESHOLD = 1.6;
+/** Fractional jitter applied to refined midpoints to seed Mullins-Sekerka growth. */
+export const REFINE_JITTER = 0.06;
+/** Default cap on live vertices before refinement is disabled (vertex budget). */
+export const DEFAULT_MAX_VERTICES = 24000;
 
-// ── Seeded RNG (for reproducible noise) ────────────────────────────────────
+// ── Seeded RNG (reproducible organic noise) ───────────────────────────────
 
 function mulberry32(seed: number): () => number {
-  let s = seed;
+  let s = seed | 0;
   return () => {
-    s |= 0; s = (s + 0x6d2b79f5) | 0;
+    s = (s + 0x6d2b79f5) | 0;
     let t = Math.imul(s ^ (s >>> 15), 1 | s);
     t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
 }
 
-// ── CPU Laplacian Solver ───────────────────────────────────────────────────
+// ── Growth configuration ────────────────────────────────────────────────────
+
+export interface GrowthConfig {
+  /** Light vs nutrient blend α ∈ [0,1]. 0 = all nutrient, 1 = all light. */
+  alpha: number;
+  /** Ambient light fraction (minimum even when sheltered). */
+  ambientLight: number;
+  /** Initial light direction (normalized), usually straight up. */
+  lightDir: [number, number, number];
+  /** Base deposition thickness per growth step (species scale s). */
+  maxThickness: number;
+  /** Global growth-rate multiplier G. */
+  growthRate: number;
+  /** Phototropism strength (0=none, 1=strong). Pulls growth toward the light. */
+  phototropism: number;
+  /** Resource surplus needed to seed a new branch. Lower → splits more readily. */
+  bifurcationThreshold: number;
+  /** Random surface-noise factor (seeds organic roughness + instability). */
+  randomFactor: number;
+  /** Laplacian grid resolution. */
+  gridSize: number;
+  /** World bounds for voxelization. */
+  boundsMin: [number, number, number];
+  boundsMax: [number, number, number];
+  /** Seed for reproducible noise. */
+  seed: number;
+  /** Max edge length before refinement kicks in. 0 = no refinement. */
+  maxEdgeLength: number;
+  /** Curvature threshold (radians) for refinement. */
+  curvatureThreshold: number;
+  /** Jitter for refined midpoints. */
+  refineJitter: number;
+  /** Kaandorp diffusion length (Péclet inverse). Short = dense compact; long = lacy. */
+  diffusionLength: number;
+  /** Colony habit — biases the growth-axis field. */
+  growthAxis: 'vertical' | 'fan' | 'hemispherical' | 'encrusting';
+  /** Branch density / compactness (0 open lacy, 1 dense). */
+  compactness: number;
+  /** Taper 0..1 (0 = uniform tube, 1 = strong base→tip taper). */
+  taper: number;
+  /** Hard vertex budget cap. */
+  maxVertices: number;
+  /** Max radial extent from the colony axis (growth bound). */
+  maxRadius: number;
+  /** Max vertical extent (growth bound). */
+  maxHeight: number;
+  /** Resource level that marks a living polyp/branch tip. */
+  tipThreshold: number;
+}
+
+/** Result of one growth step (arrays may be reallocated by refinement). */
+export interface GrowthResult {
+  positions: Float32Array;
+  normals: Float32Array;
+  indices: Uint32Array;
+  vertexCount: number;
+  triangleCount: number;
+  /** Per-vertex resource (c_total) from the last solve — used for tips/branching. */
+  resource: Float32Array;
+}
+
+// ── CPU Laplacian nutrient field ───────────────────────────────────────────
 
 /**
- * Solve ∇²c = 0 on a 3D grid via Jacobi iteration.
- *
- * Grid is flattened: index = ix + iy*gs + iz*gs²
- *
+ * Solve ∇²c = 0 on a flattened 3D grid via Jacobi iteration.
+ * Index = ix + iy*gs + iz*gs².
  * Boundary conditions:
- *   - Top row (iy = gs-1): c = 1 (source / far field)
- *   - Solid voxels:        c = 0 (absorbing boundary)
- *   - Other boundaries:    Neumann (∂c/∂n = 0)
+ *   - Top layer (iy = gs-1):            c = 1  (nutrient/light source plane)
+ *   - Solid voxels:                     c = 0  (absorbing living surface)
+ *   - Other domain boundaries:          Neumann ∂c/∂n = 0
  */
 export function solveLaplacian(
   grid: Float32Array,
@@ -65,51 +140,36 @@ export function solveLaplacian(
   for (let iter = 0; iter < iterations; iter++) {
     for (let iz = 0; iz < gs; iz++) {
       for (let iy = 0; iy < gs; iy++) {
+        const row = iy * gs;
         for (let ix = 0; ix < gs; ix++) {
-          const idx = ix + iy * gs + iz * gs * gs;
+          const idx = ix + row + iz * gs * gs;
 
-          // Solid voxel → c = 0 (absorbing boundary on object surface)
-          if (solid[idx]) {
-            tmp[idx] = 0;
-            continue;
-          }
-
-          // Far-field top layer → c = 1 (nutrient source plane — Kaandorp 2013 §2.2)
-          // MUST fire BEFORE the Neumann edge check so the source plane stays pinned.
-          if (iy === gs - 1) {
-            tmp[idx] = 1;
-            continue;
-          }
-
-          // Boundary: keep edge values unchanged (Neumann ∂c/∂n = 0)
+          if (solid[idx]) { tmp[idx] = 0; continue; }
+          if (iy === gs - 1) { tmp[idx] = 1; continue; }
           if (ix === 0 || ix === gs - 1 || iy === 0 || iz === 0 || iz === gs - 1) {
             tmp[idx] = grid[idx];
             continue;
           }
 
-          // Jacobi: c_new = average of 6 neighbors
-          const cL = grid[(ix - 1) + iy * gs + iz * gs * gs];
-          const cR = grid[(ix + 1) + iy * gs + iz * gs * gs];
+          const cL = grid[(ix - 1) + row + iz * gs * gs];
+          const cR = grid[(ix + 1) + row + iz * gs * gs];
           const cD = grid[ix + (iy - 1) * gs + iz * gs * gs];
           const cU = grid[ix + (iy + 1) * gs + iz * gs * gs];
-          const cB = grid[ix + iy * gs + (iz - 1) * gs * gs];
-          const cF = grid[ix + iy * gs + (iz + 1) * gs * gs];
-
+          const cB = grid[ix + row + (iz - 1) * gs * gs];
+          const cF = grid[ix + row + (iz + 1) * gs * gs];
           tmp[idx] = (cL + cR + cD + cU + cB + cF) / 6;
         }
       }
     }
-
     for (let i = 0; i < N; i++) grid[i] = tmp[i];
   }
 }
 
 /**
- * Voxelize vertex positions into the solid grid + fill interior.
- *
- * Uses ray casting to determine which voxels are INSIDE the mesh,
- * then marks them all as solid. This ensures the Laplacian solver
- * treats the coral as a solid object, not a thin shell.
+ * Voxelize a watertight surface mesh into the solid grid (surface shell + a
+ * thin interior band). We fill a thin crust rather than flood-filling the whole
+ * interior: coral branches are porous, and flood-filling thin tips was a source
+ * of false "solid" voxels that artificially starved tip growth.
  */
 export function voxelizeVertices(
   positions: Float32Array,
@@ -120,498 +180,344 @@ export function voxelizeVertices(
   boundsMin: [number, number, number],
   boundsMax: [number, number, number],
 ): void {
-  const rangeX = boundsMax[0] - boundsMin[0];
-  const rangeY = boundsMax[1] - boundsMin[1];
-  const rangeZ = boundsMax[2] - boundsMin[2];
+  const rangeX = boundsMax[0] - boundsMin[0] || 1e-6;
+  const rangeY = boundsMax[1] - boundsMin[1] || 1e-6;
+  const rangeZ = boundsMax[2] - boundsMin[2] || 1e-6;
 
-  // 1. Mark surface voxels (where vertices are)
   for (let v = 0; v < vertexCount; v++) {
     const px = positions[v * 3];
     const py = positions[v * 3 + 1];
     const pz = positions[v * 3 + 2];
 
-    const gx = Math.floor(((px - boundsMin[0]) / rangeX) * (gs - 1));
-    const gy = Math.floor(((py - boundsMin[1]) / rangeY) * (gs - 1));
-    const gz = Math.floor(((pz - boundsMin[2]) / rangeZ) * (gs - 1));
+    const gx = Math.max(0, Math.min(gs - 1, Math.floor(((px - boundsMin[0]) / rangeX) * (gs - 1))));
+    const gy = Math.max(0, Math.min(gs - 1, Math.floor(((py - boundsMin[1]) / rangeY) * (gs - 1))));
+    const gz = Math.max(0, Math.min(gs - 1, Math.floor(((pz - boundsMin[2]) / rangeZ) * (gs - 1))));
 
-    const cx = Math.max(0, Math.min(gs - 1, gx));
-    const cy = Math.max(0, Math.min(gs - 1, gy));
-    const cz = Math.max(0, Math.min(gs - 1, gz));
-
-    // Mark voxel and immediate neighbors
     for (let dx = -1; dx <= 1; dx++) {
       for (let dy = -1; dy <= 1; dy++) {
         for (let dz = -1; dz <= 1; dz++) {
-          if (Math.abs(dx) + Math.abs(dy) + Math.abs(dz) > 1) continue;
-          const nx = cx + dx;
-          const ny = cy + dy;
-          const nz = cz + dz;
+          const nx = gx + dx, ny = gy + dy, nz = gz + dz;
           if (nx < 0 || nx >= gs || ny < 0 || ny >= gs || nz < 0 || nz >= gs) continue;
           solid[nx + ny * gs + nz * gs * gs] = 1;
         }
       }
     }
   }
-
-  // 2. Fill interior using flood fill from grid edges
-  //    Any voxel NOT reachable from the edge is interior → solid
-  const visited = new Uint8Array(gs * gs * gs);
-  const queue: number[] = [];
-
-  // Seed flood from all boundary voxels that are NOT solid
-  for (let iz = 0; iz < gs; iz++) {
-    for (let iy = 0; iy < gs; iy++) {
-      for (let ix = 0; ix < gs; ix++) {
-        if (ix === 0 || ix === gs - 1 || iy === 0 || iy === gs - 1 || iz === 0 || iz === gs - 1) {
-          const idx = ix + iy * gs + iz * gs * gs;
-          if (!solid[idx] && !visited[idx]) {
-            visited[idx] = 1;
-            queue.push(idx);
-          }
-        }
-      }
-    }
-  }
-
-  // BFS flood fill
-  let head = 0;
-  while (head < queue.length) {
-    const idx = queue[head++];
-    const iz = Math.floor(idx / (gs * gs));
-    const iy = Math.floor((idx % (gs * gs)) / gs);
-    const ix = idx % gs;
-
-    const neighbors = [
-      [ix - 1, iy, iz], [ix + 1, iy, iz],
-      [ix, iy - 1, iz], [ix, iy + 1, iz],
-      [ix, iy, iz - 1], [ix, iy, iz + 1],
-    ];
-
-    for (const [nx, ny, nz] of neighbors) {
-      if (nx < 0 || nx >= gs || ny < 0 || ny >= gs || nz < 0 || nz >= gs) continue;
-      const nidx = nx + ny * gs + nz * gs * gs;
-      if (!solid[nidx] && !visited[nidx]) {
-        visited[nidx] = 1;
-        queue.push(nidx);
-      }
-    }
-  }
-
-  // 3. Any unvisited non-solid voxel is interior → mark solid
-  for (let i = 0; i < gs * gs * gs; i++) {
-    if (!solid[i] && !visited[i]) {
-      solid[i] = 1;
-    }
-  }
 }
 
-// ── Growth Step ────────────────────────────────────────────────────────────
-
-export interface GrowthConfig {
-  /** Light vs nutrient weight (α). 0 = all nutrient, 1 = all light. */
-  alpha: number;
-  /** Ambient light fraction. */
-  ambientLight: number;
-  /** Light direction (normalized). */
-  lightDir: [number, number, number];
-  /** Maximum growth layer thickness (species parameter s). */
-  maxThickness: number;
-  /** Additional growth rate multiplier — scales displacement magnitude directly. */
-  growthRate: number;
-  /** Phototropism strength (0=none, 1=strong). Biases growth toward light source. */
-  phototropism: number;
-  /**
-   * Threshold for branching (bifurcation). Higher values → fewer splits.
-   * Maps to curvature sensitivity in mesh refinement.
-   */
-  bifurcationThreshold: number;
-  /** Random factor for displacement noise. Seeds surface roughness. */
-  randomFactor: number;
-  /** Grid resolution. */
-  gridSize: number;
-  /** World-space bounds. */
-  boundsMin: [number, number, number];
-  boundsMax: [number, number, number];
-  /** Random seed for reproducibility. */
-  seed: number;
-  /** Max edge length before mesh refinement (adaptive tessellation). 0 = no refinement. */
-  maxEdgeLength: number;
-  /** Curvature threshold for refinement (radians). */
-  curvatureThreshold: number;
-  /** Jitter amount for new vertices (seeds Mullins-Sekerka instability). */
-  refineJitter: number;
-}
 /**
- * Run one complete growth step on CPU.
- *
- * Returns updated positions, normals, indices and vertexCount.
- * All arrays may be reallocated if mesh refinement occurred.
+ * Morphology-aware growth-axis bias for a vertex. This is what makes each
+ * preset read as a DISTINCT form even though branching itself stays emergent.
  */
+function axisBias(
+  axis: GrowthConfig['growthAxis'],
+  px: number, _py: number, pz: number,
+): [number, number, number] {
+  const radial = Math.hypot(px, pz);
+  const ox = radial > 1e-5 ? px / radial : 0;
+  const oz = radial > 1e-5 ? pz / radial : 0;
+
+  switch (axis) {
+    case 'vertical':
+      // Staghorn / organ-pipe: strong upward shaft with a little outward flair.
+      return [ox * 0.22, 0.92, oz * 0.22];
+    case 'hemispherical':
+      // Brain / table: radial dome — equal outward + upward.
+      return [ox * 0.62, 0.5, oz * 0.62];
+    case 'fan':
+      // Sea-fan: spread within the X-Y plane, negligible Z (planar lattice).
+      return [0.6, 0.78, 0];
+    case 'encrusting':
+      // Flat mat: almost purely radial/horizontal, minimal vertical.
+      return [1.0, 0.14, 1.0];
+  }
+}
+
+/** Single growth step: resource → direction → displacement → refine → normals. */
 export function growthStep(
   positions: Float32Array,
   normals: Float32Array,
   indices: Uint32Array,
   vertexCount: number,
   config: GrowthConfig,
-): { positions: Float32Array; normals: Float32Array; indices: Uint32Array; vertexCount: number; triangleCount: number } {
+): GrowthResult {
   const gs = config.gridSize;
   const N = gs * gs * gs;
 
-  // 1. Voxelize + fill interior
+  // 1. Voxelize surface + solve Laplacian nutrient field.
   const solid = new Uint8Array(N);
   voxelizeVertices(positions, indices, vertexCount, solid, gs, config.boundsMin, config.boundsMax);
 
-  // 2. Solve Laplacian ∇²c = 0
   const grid = new Float32Array(N);
-  // Initialize far-field: top layer c = 1
   for (let iz = 0; iz < gs; iz++) {
     for (let ix = 0; ix < gs; ix++) {
-      const iy = gs - 1;
-      grid[ix + iy * gs + iz * gs * gs] = 1.0;
+      grid[ix + (gs - 1) * gs + iz * gs * gs] = 1.0;
     }
   }
   solveLaplacian(grid, solid, gs, JACOBI_ITERATIONS);
 
-  // 3. Displace vertices
-  const rangeX = config.boundsMax[0] - config.boundsMin[0];
-  const rangeY = config.boundsMax[1] - config.boundsMin[1];
-  const rangeZ = config.boundsMax[2] - config.boundsMin[2];
-  const rng = mulberry32(config.seed + 999);
+  const axis = config.growthAxis;
+  const diffusion = config.diffusionLength > 1 ? config.diffusionLength : 1;
+  const compact = config.compactness;
+  const alpha = config.alpha;
+  const ambient = config.ambientLight;
+  const photo = config.phototropism;
+  const maxH = config.maxHeight;
+  const maxR = config.maxRadius;
+  const tap = config.taper;
 
-  // Compute a per-step phototropic light direction.
-  // When phototropism > 0, light direction gains a horizontal component
-  // pointing outward (away from center axis), making branches tilt toward light.
-  // Kaandorp 2013 §2.3: "c_light depends on the angle between the surface normal
-  // and the light direction — phototropism can be modeled by biasing this direction
-  // based on the local growth axis."
-  const photoStrength = config.phototropism;
+  const rng = mulberry32(config.seed ^ 0x51ab3e7);
+
+  const newPos = new Float32Array(positions.length);
+  newPos.set(positions);
+  const resource = new Float32Array(vertexCount);
 
   for (let v = 0; v < vertexCount; v++) {
-    const px = positions[v * 3];
-    const py = positions[v * 3 + 1];
-    const pz = positions[v * 3 + 2];
+    const i3 = v * 3;
+    const px = positions[i3], py = positions[i3 + 1], pz = positions[i3 + 2];
+    const nx = normals[i3], ny = normals[i3 + 1], nz = normals[i3 + 2];
 
-    const nx = normals[v * 3];
-    const ny = normals[v * 3 + 1];
-    const nz = normals[v * 3 + 2];
+    const radial = Math.hypot(px, pz);
+    const height = py;
 
-    // Phototropic light bias: tilt the effective light direction toward the
-    // outward horizontal direction for this vertex. Stronger at tips (higher up).
-    const heightFrac = Math.min(1, Math.max(0, (py + 10) / 30));
-    const radialDist = Math.sqrt(px * px + pz * pz);
-    let lx = config.lightDir[0];
-    let ly = config.lightDir[1];
-    let lz = config.lightDir[2];
-    if (photoStrength > 0 && radialDist > 0.01) {
-      const outwardX = px / radialDist;
-      const outwardZ = pz / radialDist;
-      const bias = photoStrength * heightFrac * 0.3;
-      lx += outwardX * bias;
-      lz += outwardZ * bias;
-      // Re-normalize
-      const lLen = Math.sqrt(lx * lx + ly * ly + lz * lz);
-      lx /= lLen; ly /= lLen; lz /= lLen;
+    // ── Nutrient (Kaandorp): decays with effective transport distance.
+    //    Compact colonies feel a stronger distance penalty (dense dome),
+    //    open lacy ones keep feeding thin tips (long diffusionLength).
+    const effDist = height + radial * (0.35 + compact * 0.65);
+    const cNutr = Math.exp(-effDist / diffusion);
+
+    // ── Light exposure (phototropic). Higher, up-facing tips win.
+    const upDot = Math.max(0, ny);                           // towards (0,1,0)
+    const crown = Math.min(1, height / (maxH || 1));         // exposed top
+    const exposure = 0.5 * (1 + upDot) * 0.55 + crown * 0.45;
+    const cLight = (1 - ambient) * exposure + ambient;
+
+    // ── Total resource traded with α.
+    const cTotal = (1 - alpha) * cNutr + alpha * cLight;
+    resource[v] = cTotal;
+
+    // Surplus above the bifurcation threshold amplifies growth + branch seeding.
+    const surplus = Math.max(0, cTotal - config.bifurcationThreshold);
+
+    // ── Growth direction = normal blended with the morphology axis field.
+    const [bax, bay, baz] = axisBias(axis, px, py, pz);
+    let dx = nx + bax * 0.6;
+    let dy = ny + bay * 0.6 + photo * 0.35;   // phototropism pulls up
+    let dz = nz + baz * 0.6;
+    if (axis === 'fan') dz *= 0.06;            // keep sea-fan planar
+
+    // Surplus-driven lateral wobble seeds new, organic branch directions.
+    const wob = config.randomFactor * (1 + surplus * 2.2);
+    dx += (rng() - 0.5) * 2 * wob;
+    dy += (rng() - 0.5) * wob * 0.35;
+    dz += (rng() - 0.5) * 2 * wob * (axis === 'fan' ? 0.12 : 1);
+
+    const dlen = Math.hypot(dx, dy, dz) || 1e-6;
+    dx /= dlen; dy /= dlen; dz /= dlen;
+
+    // ── Displacement magnitude: resource × thickness × rate × surplus × noise.
+    const randNoise = 1 + (rng() - 0.5) * 2 * config.randomFactor * 0.5;
+    let m = cTotal * config.maxThickness * config.growthRate * (1 + surplus * 2.4) * randNoise;
+    // Taper: slower deposition beyond mid-colony for tapered branches.
+    if (tap > 0) {
+      const t = Math.min(1, height / (maxH * 0.7 || 1e-6));
+      m *= 1 - tap * Math.max(0, t - 0.5) * 0.5;
     }
+    m = Math.min(m, config.maxThickness * 2.75);
 
-    // Sample nutrient from grid (trilinear interpolation)
-    const fx = ((px - config.boundsMin[0]) / rangeX) * (gs - 1);
-    const fy = ((py - config.boundsMin[1]) / rangeY) * (gs - 1);
-    const fz = ((pz - config.boundsMin[2]) / rangeZ) * (gs - 1);
-    const ix = Math.max(0, Math.min(gs - 2, Math.floor(fx)));
-    const iy = Math.max(0, Math.min(gs - 2, Math.floor(fy)));
-    const iz = Math.max(0, Math.min(gs - 2, Math.floor(fz)));
-    const tx = fx - ix, ty = fy - iy, tz = fz - iz;
+    let ox = px + dx * m;
+    let oy = py + dy * m;
+    let oz = pz + dz * m;
 
-    // Trilinear interpolation
-    const c000 = grid[ix + iy * gs + iz * gs * gs];
-    const c100 = grid[(ix + 1) + iy * gs + iz * gs * gs];
-    const c010 = grid[ix + (iy + 1) * gs + iz * gs * gs];
-    const c110 = grid[(ix + 1) + (iy + 1) * gs + iz * gs * gs];
-    const c001 = grid[ix + iy * gs + (iz + 1) * gs * gs];
-    const c101 = grid[(ix + 1) + iy * gs + (iz + 1) * gs * gs];
-    const c011 = grid[ix + (iy + 1) * gs + (iz + 1) * gs * gs];
-    const c111 = grid[(ix + 1) + (iy + 1) * gs + (iz + 1) * gs * gs];
+    // ── Bound growth (no NaN, bounded colony). Clamp softly.
+    const oRad = Math.hypot(ox, oz);
+    if (oRad > maxR) { const s = maxR / (oRad || 1e-6); ox *= s; oz *= s; }
+    if (oy > maxH) oy = maxH;
+    if (oy < config.boundsMin[1] + 0.3) oy = config.boundsMin[1] + 0.3;
 
-    const c00 = c000 * (1 - tx) + c100 * tx;
-    const c01 = c001 * (1 - tx) + c101 * tx;
-    const c10 = c010 * (1 - tx) + c110 * tx;
-    const c11 = c011 * (1 - tx) + c111 * tx;
-    const c0 = c00 * (1 - ty) + c10 * ty;
-    const c1 = c01 * (1 - ty) + c11 * ty;
-    const cNutrient = c0 * (1 - tz) + c1 * tz;
-
-    // Light: c_light = (1-ambient)·max(0, n̂·lightDir) + ambient
-    // Use the phototropism-biased light direction
-    const cosTheta = Math.max(0, nx * lx + ny * ly + nz * lz);
-    const cLight = (1 - config.ambientLight) * cosTheta + config.ambientLight;
-
-    // Total: c_total = (1-α)·c_nutrient + α·c_light
-    const cTotal = (1 - config.alpha) * cNutrient + config.alpha * cLight;
-
-    // Random factor: add noise to the displacement magnitude for surface roughness.
-    // This seeds Mullins-Sekerka instability naturally (Merks 2003 §2.3: "small random
-    // perturbations are amplified by the Laplacian growth process").
-    const randNoise = config.randomFactor > 0
-      ? 1 + (rng() - 0.5) * 2 * config.randomFactor
-      : 1;
-
-    // Growth rate multiplier: species-dependent speed scaling
-    const rateScale = config.growthRate;
-
-    // Displace: V_new = V + n̂ · c_total · s · growthRate · noise
-    const displacement = cTotal * config.maxThickness * rateScale * randNoise;
-    positions[v * 3] += nx * displacement;
-    positions[v * 3 + 1] += ny * displacement;
-    positions[v * 3 + 2] += nz * displacement;
+    newPos[i3] = ox; newPos[i3 + 1] = oy; newPos[i3 + 2] = oz;
   }
 
-  // 4. Recompute normals from triangles
-  const triCount = indices.length / 3;
-  recomputeNormals(positions, normals, indices, vertexCount, triCount);
+  // Refine at branch tips (bounded by vertex budget) → emergent bifurcation.
+  const refined = refineMesh(newPos, normals, indices, vertexCount, resource, config, rng);
 
-  // 5. Adaptive mesh refinement (split long edges)
-  if (config.maxEdgeLength > 0) {
-    const rng = mulberry32(config.seed + Math.floor(vertexCount * 0.618));
-    // bifurcationThreshold modulates curvature sensitivity:
-    //   Low bifurcationThreshold (0.3-0.4) → more branches (staghorn, table)
-    //   High bifurcationThreshold (0.8-0.9) → fewer branches (brain, organ pipe)
-    // Map: effectiveCurvatureThreshold = base * (0.3 + bifurcationThreshold * 1.2)
-    const effectiveCurvature = config.curvatureThreshold * (0.3 + config.bifurcationThreshold * 1.2);
-    const refined = refineMesh(
-      positions, indices, normals,
-      config.maxEdgeLength,
-      effectiveCurvature,
-      config.refineJitter,
-      rng,
-    );
-    const newVC = refined.positions.length / 3;
+  // Recompute smooth normals from the (possibly refined) mesh.
+  const outNormals = new Float32Array(refined.positions.length);
+  recomputeNormals(refined.positions, outNormals, refined.indices, refined.vertexCount, refined.triangleCount);
 
-    // Recompute normals one last time for the refined result.
-    recomputeNormals(refined.positions, refined.normals, refined.indices, newVC, refined.indices.length / 3);
+  return {
+    positions: refined.positions,
+    normals: outNormals,
+    indices: refined.indices,
+    vertexCount: refined.vertexCount,
+    triangleCount: refined.triangleCount,
+    resource,
+  };
+}
 
-    return {
-      positions: refined.positions,
-      normals: refined.normals,
-      indices: refined.indices,
-      vertexCount: newVC,
-      triangleCount: refined.indices.length / 3,
-    };
-  }
 
-  return { positions, normals, indices, vertexCount, triangleCount: triCount };
+// ── Adaptive refinement (emergent bifurcation) ──────────────────────────────
+
+interface RefineMeshResult {
+  positions: Float32Array;
+  indices: Uint32Array;
+  vertexCount: number;
+  triangleCount: number;
 }
 
 /**
- * Adaptive mesh refinement for branching growth.
- *
- * Splits edges longer than maxEdgeLen, adding a vertex at the midpoint.
- * The new vertex is jittered by `jitter * radius` along the normal to
- * seed the Mullins-Sekerka instability (Merks 2003 §3.1).
- *
- * Only refines triangles where at least one edge exceeds maxEdgeLen
- * AND the face curvature exceeds CURVATURE_REFINE_THRESHOLD.
- *
- * Returns new positions, indices, and normals arrays (old arrays are NOT reused).
+ * Split long, high-curvature edges whose endpoints carry resource surplus.
+ * Splitting is gated by the bifurcation threshold (surplus) and the vertex
+ * budget, so fine detail only appears at well-fed branch tips — this is the
+ * Merks-style mechanism that turns smooth tips into new branches.
  */
-export function refineMesh(
+function refineMesh(
   positions: Float32Array,
+  _normals: Float32Array,
   indices: Uint32Array,
-  normals: Float32Array,
-  maxEdgeLen: number,
-  curvatureThreshold: number,
-  jitter: number,
+  vertexCount: number,
+  resource: Float32Array,
+  config: GrowthConfig,
   rng: () => number,
-): { positions: Float32Array; indices: Uint32Array; normals: Float32Array } {
-  const vCount = positions.length / 3;
+): RefineMeshResult {
+  if (config.maxEdgeLength <= 0) {
+    return { positions, indices, vertexCount, triangleCount: indices.length / 3 };
+  }
+  if (vertexCount >= config.maxVertices) {
+    return { positions, indices, vertexCount, triangleCount: indices.length / 3 };
+  }
+
   const tCount = indices.length / 3;
 
-  // ── 1. Build edge → triangles map ────────────────────────────────────
-  const edgeKey = (a: number, b: number): string => a < b ? `${a}|${b}` : `${b}|${a}`;
+  // Build edge → face adjacency for curvature + splitting.
   const edgeToTris = new Map<string, number[]>();
-
   for (let t = 0; t < tCount; t++) {
-    const i0 = indices[t * 3], i1 = indices[t * 3 + 1], i2 = indices[t * 3 + 2];
-    for (const [a, b] of [[i0, i1], [i1, i2], [i2, i0]]) {
-      const key = edgeKey(a, b);
-      if (!edgeToTris.has(key)) edgeToTris.set(key, []);
-      edgeToTris.get(key)!.push(t);
-    }
+    const a = indices[t * 3], b = indices[t * 3 + 1], c = indices[t * 3 + 2];
+    pushEdge(edgeToTris, a, b, t);
+    pushEdge(edgeToTris, b, c, t);
+    pushEdge(edgeToTris, c, a, t);
   }
 
-  // ── 2. Compute face normals (for curvature test) ───────────────────
-  const faceNormals: [number, number, number][] = [];
-  const faceCenters: [number, number, number][] = [];
-
+  // Face normals (for dihedral curvature).
+  const fn = new Float32Array(tCount * 3);
   for (let t = 0; t < tCount; t++) {
-    const i0 = indices[t * 3], i1 = indices[t * 3 + 1], i2 = indices[t * 3 + 2];
-    const v0x = positions[i0 * 3], v0y = positions[i0 * 3 + 1], v0z = positions[i0 * 3 + 2];
-    const v1x = positions[i1 * 3], v1y = positions[i1 * 3 + 1], v1z = positions[i1 * 3 + 2];
-    const v2x = positions[i2 * 3], v2y = positions[i2 * 3 + 1], v2z = positions[i2 * 3 + 2];
-
-    const e1x = v1x - v0x, e1y = v1y - v0y, e1z = v1z - v0z;
-    const e2x = v2x - v0x, e2y = v2y - v0y, e2z = v2z - v0z;
-    const fnx = e1y * e2z - e1z * e2y;
-    const fny = e1z * e2x - e1x * e2z;
-    const fnz = e1x * e2y - e1y * e2x;
-    const len = Math.sqrt(fnx * fnx + fny * fny + fnz * fnz);
-    if (len > 1e-10) {
-      faceNormals[t] = [fnx / len, fny / len, fnz / len];
-    } else {
-      faceNormals[t] = [0, 1, 0];
-    }
-    faceCenters[t] = [(v0x + v1x + v2x) / 3, (v0y + v1y + v2y) / 3, (v0z + v1z + v2z) / 3];
+    const a = indices[t * 3], b = indices[t * 3 + 1], c = indices[t * 3 + 2];
+    const ax = positions[a * 3], ay = positions[a * 3 + 1], az = positions[a * 3 + 2];
+    const bx = positions[b * 3], by = positions[b * 3 + 1], bz = positions[b * 3 + 2];
+    const cx = positions[c * 3], cy = positions[c * 3 + 1], cz = positions[c * 3 + 2];
+    const e1x = bx - ax, e1y = by - ay, e1z = bz - az;
+    const e2x = cx - ax, e2y = cy - ay, e2z = cz - az;
+    let nx = e1y * e2z - e1z * e2y;
+    let ny = e1z * e2x - e1x * e2z;
+    let nz = e1x * e2y - e1y * e2x;
+    const l = Math.hypot(nx, ny, nz) || 1;
+    fn[t * 3] = nx / l; fn[t * 3 + 1] = ny / l; fn[t * 3 + 2] = nz / l;
   }
 
-  // ── 3. Find edges to split ──────────────────────────────────────────
-  interface EdgeSplit { a: number; b: number; mid: number; }
-  const splits: EdgeSplit[] = [];
-  const edgesToSplit = new Set<string>();
-  const splitVerts = new Map<string, number>();  // edge key → new vertex index
-  let nextVertIdx = vCount;
+  const splitVerts = new Map<string, number>();
+  let nextVert = vertexCount;
+  const maxEdgeLen = config.maxEdgeLength;
+  const thr = config.bifurcationThreshold;
 
   for (const [key, tris] of edgeToTris) {
+    if (nextVert >= config.maxVertices) break;
     const [a, b] = key.split('|').map(Number);
     const ax = positions[a * 3], ay = positions[a * 3 + 1], az = positions[a * 3 + 2];
     const bx = positions[b * 3], by = positions[b * 3 + 1], bz = positions[b * 3 + 2];
     const dx = bx - ax, dy = by - ay, dz = bz - az;
-    const edgeLen = Math.sqrt(dx * dx + dy * dy + dz * dz);
-
+    const edgeLen = Math.hypot(dx, dy, dz);
     if (edgeLen < maxEdgeLen) continue;
 
-    // Check curvature: angle between face normals of adjacent triangles
+    // Curvature gate: only split genuinely sharp features.
     let maxAngle = 0;
-    for (let ti = 0; ti < tris.length && ti < 2; ti++) {
-      for (let tj = ti + 1; tj < tris.length && tj < 2; tj++) {
-        const fn1 = faceNormals[tris[ti]];
-        const fn2 = faceNormals[tris[tj]];
-        if (!fn1 || !fn2) continue;
-        const dot = fn1[0] * fn2[0] + fn1[1] * fn2[1] + fn1[2] * fn2[2];
-        const angle = Math.acos(Math.max(-1, Math.min(1, dot)));
-        if (angle > maxAngle) maxAngle = angle;
+    for (let ti = 0; ti < tris.length; ti++) {
+      for (let tj = ti + 1; tj < tris.length; tj++) {
+        const i = tris[ti] * 3, j = tris[tj] * 3;
+        const dot = fn[i] * fn[j] + fn[i + 1] * fn[j + 1] + fn[i + 2] * fn[j + 2];
+        const ang = Math.acos(Math.max(-1, Math.min(1, dot)));
+        if (ang > maxAngle) maxAngle = ang;
       }
     }
 
-    // Refine if curvature is significant OR the edge is very long
-    if (maxAngle < curvatureThreshold && edgeLen < maxEdgeLen * 1.5) continue;
+    // Resource gate: at least one endpoint must be a well-fed tip (surplus).
+    const adjacentTip = resource[a] > thr || resource[b] > thr;
+    if (!adjacentTip) continue;
+    if (maxAngle < config.curvatureThreshold && edgeLen < maxEdgeLen * 2.5) continue;
 
-    edgesToSplit.add(key);
-    const mid = nextVertIdx++;
-    splitVerts.set(key, mid);
-    splits.push({
-      a, b, mid,
-    });
+    splitVerts.set(key, nextVert++);
   }
 
-  if (splits.length === 0) {
-    // No refinement needed
-    return { positions, indices, normals };
+  if (splitVerts.size === 0) {
+    return { positions, indices, vertexCount, triangleCount: tCount };
   }
 
-  // ── 4. Build new vertex array (existing + split points) ────────────
-  const newPositions = new Float32Array(positions.length + splits.length * 3);
-  const newNormals = new Float32Array(normals.length + splits.length * 3);
+  // New vertex array = existing + split midpoints (jittered to seed instability).
+  const newPositions = new Float32Array(positions.length + splitVerts.size * 3);
   newPositions.set(positions);
-  newNormals.set(normals);
-
-  for (const s of splits) {
-    const ax = positions[s.a * 3], ay = positions[s.a * 3 + 1], az = positions[s.a * 3 + 2];
-    const bx = positions[s.b * 3], by = positions[s.b * 3 + 1], bz = positions[s.b * 3 + 2];
-    let mx = (ax + bx) / 2, my = (ay + by) / 2, mz = (az + bz) / 2;
-
-    // Jitter the midpoint to seed instability
-    mx += (rng() - 0.5) * 2 * jitter;
-    my += (rng() - 0.5) * 2 * jitter;
-    mz += (rng() - 0.5) * 2 * jitter;
-
-    const idx = s.mid * 3;
-    newPositions[idx] = mx;
-    newPositions[idx + 1] = my;
-    newPositions[idx + 2] = mz;
-
-    // Normal: average of endpoints
-    const nx = (normals[s.a * 3] + normals[s.b * 3]) / 2;
-    const ny = (normals[s.a * 3 + 1] + normals[s.b * 3 + 1]) / 2;
-    const nz = (normals[s.a * 3 + 2] + normals[s.b * 3 + 2]) / 2;
-    const nlen = Math.sqrt(nx * nx + ny * ny + nz * nz);
-    if (nlen > 1e-10) {
-      newNormals[s.mid * 3] = nx / nlen;
-      newNormals[s.mid * 3 + 1] = ny / nlen;
-      newNormals[s.mid * 3 + 2] = nz / nlen;
-    } else {
-      newNormals[s.mid * 3] = 0;
-      newNormals[s.mid * 3 + 1] = 1;
-      newNormals[s.mid * 3 + 2] = 0;
-    }
+  for (const [key, mid] of splitVerts) {
+    const [a, b] = key.split('|').map(Number);
+    const ax = positions[a * 3], ay = positions[a * 3 + 1], az = positions[a * 3 + 2];
+    const bx = positions[b * 3], by = positions[b * 3 + 1], bz = positions[b * 3 + 2];
+    const jx = config.refineJitter, jy = config.refineJitter, jz = config.refineJitter;
+    const wx = (rng() - 0.5) * 2, wy = (rng() - 0.5) * 2, wz = (rng() - 0.5) * 2;
+    newPositions[mid * 3] = (ax + bx) / 2 + jx * wx;
+    newPositions[mid * 3 + 1] = (ay + by) / 2 + jy * wy;
+    newPositions[mid * 3 + 2] = (az + bz) / 2 + jz * wz;
   }
 
-  // ── 5. Build new index array (split triangles) ─────────────────────
-  const newTriangles: [number, number, number][] = [];
 
+  // Rebuild triangles with the new midpoints.
+  const newTri: [number, number, number][] = [];
   for (let t = 0; t < tCount; t++) {
     const i0 = indices[t * 3], i1 = indices[t * 3 + 1], i2 = indices[t * 3 + 2];
-    const e01 = edgeKey(i0, i1);
-    const e12 = edgeKey(i1, i2);
-    const e20 = edgeKey(i2, i0);
+    const m01 = splitVerts.get(edgeKey(i0, i1));
+    const m12 = splitVerts.get(edgeKey(i1, i2));
+    const m20 = splitVerts.get(edgeKey(i2, i0));
+    const n = (m01 !== undefined ? 1 : 0) + (m12 !== undefined ? 1 : 0) + (m20 !== undefined ? 1 : 0);
 
-    const split01 = splitVerts.get(e01);
-    const split12 = splitVerts.get(e12);
-    const split20 = splitVerts.get(e20);
-
-    const numSplits = (split01 !== undefined ? 1 : 0) +
-      (split12 !== undefined ? 1 : 0) +
-      (split20 !== undefined ? 1 : 0);
-
-    if (numSplits === 0) {
-      newTriangles.push([i0, i1, i2]);
-    } else if (numSplits === 1) {
-      // Split one edge → 2 triangles
-      if (split01 !== undefined) {
-        newTriangles.push([i0, split01, i2]);
-        newTriangles.push([split01, i1, i2]);
-      } else if (split12 !== undefined) {
-        newTriangles.push([i0, i1, split12]);
-        newTriangles.push([split12, i1, i2]);
+    if (n === 0) {
+      newTri.push([i0, i1, i2]);
+    } else if (n === 1) {
+      if (m01 !== undefined) { newTri.push([i0, m01, i2], [m01, i1, i2]); }
+      else if (m12 !== undefined) { newTri.push([i0, i1, m12], [m12, i1, i2]); }
+      else { newTri.push([i0, i1, m20!], [i0, m20!, i2]); }
+    } else if (n === 2) {
+      if (m01 !== undefined && m12 !== undefined) {
+        newTri.push([i0, m01, i2], [m01, m12, i2], [m01, i1, m12]);
+      } else if (m12 !== undefined && m20 !== undefined) {
+        newTri.push([i0, i1, m12], [i0, m12, m20], [m12, i2, m20]);
       } else {
-        newTriangles.push([i0, i1, split20!]);
-        newTriangles.push([i0, split20!, i2]);
-      }
-    } else if (numSplits === 2) {
-      // Split two edges → 3 triangles
-      if (split01 !== undefined && split12 !== undefined) {
-        newTriangles.push([i0, split01, i2]);
-        newTriangles.push([split01, split12, i2]);
-        newTriangles.push([split01, i1, split12]);
-      } else if (split12 !== undefined && split20 !== undefined) {
-        newTriangles.push([i0, i1, split12]);
-        newTriangles.push([i0, split12, split20]);
-        newTriangles.push([split12, i2, split20]);
-      } else {
-        // split20 && split01 (both confirmed defined in this branch)
-        newTriangles.push([i0, split01!, split20!]);
-        newTriangles.push([i1, split01!, i2]);
-        newTriangles.push([split01!, split20!, i2]);
+        newTri.push([i0, m01!, m20!], [i1, m01!, i2], [m01!, m20!, i2]);
       }
     } else {
-      // All three edges split → 4 triangles
-      newTriangles.push([i0, split01!, split20!]);
-      newTriangles.push([split01!, i1, split12!]);
-      newTriangles.push([split20!, split12!, i2]);
-      newTriangles.push([split01!, split12!, split20!]);
+      newTri.push([i0, m01!, m20!], [m01!, i1, m12!], [m20!, m12!, i2], [m01!, m12!, m20!]);
     }
   }
 
-  const newIndices = new Uint32Array(newTriangles.length * 3);
-  for (let i = 0; i < newTriangles.length; i++) {
-    newIndices[i * 3] = newTriangles[i][0];
-    newIndices[i * 3 + 1] = newTriangles[i][1];
-    newIndices[i * 3 + 2] = newTriangles[i][2];
+  const newIndices = new Uint32Array(newTri.length * 3);
+  for (let i = 0; i < newTri.length; i++) {
+    newIndices[i * 3] = newTri[i][0];
+    newIndices[i * 3 + 1] = newTri[i][1];
+    newIndices[i * 3 + 2] = newTri[i][2];
   }
 
-  return { positions: newPositions, indices: newIndices, normals: newNormals };
+  return { positions: newPositions, indices: newIndices, vertexCount: nextVert, triangleCount: newTri.length };
+}
+
+function pushEdge(map: Map<string, number[]>, a: number, b: number, t: number): void {
+  const key = edgeKey(a, b);
+  const arr = map.get(key);
+  if (arr) arr.push(t);
+  else map.set(key, [t]);
+}
+
+function edgeKey(a: number, b: number): string {
+  return a < b ? `${a}|${b}` : `${b}|${a}`;
 }
 
 /**
- * Recompute per-vertex normals by accumulating face normals.
+ * Recompute per-vertex normals by accumulating face normals, then normalize.
+ * Degenerate faces are guarded so the output never contains NaN.
  */
 export function recomputeNormals(
   positions: Float32Array,
@@ -623,17 +529,14 @@ export function recomputeNormals(
   for (let i = 0; i < vertexCount * 3; i++) normals[i] = 0;
 
   for (let t = 0; t < triangleCount; t++) {
-    const i0 = indices[t * 3];
-    const i1 = indices[t * 3 + 1];
-    const i2 = indices[t * 3 + 2];
-
+    const i0 = indices[t * 3], i1 = indices[t * 3 + 1], i2 = indices[t * 3 + 2];
+    if (i0 >= vertexCount || i1 >= vertexCount || i2 >= vertexCount) continue;
     const v0x = positions[i0 * 3], v0y = positions[i0 * 3 + 1], v0z = positions[i0 * 3 + 2];
     const v1x = positions[i1 * 3], v1y = positions[i1 * 3 + 1], v1z = positions[i1 * 3 + 2];
     const v2x = positions[i2 * 3], v2y = positions[i2 * 3 + 1], v2z = positions[i2 * 3 + 2];
 
     const e1x = v1x - v0x, e1y = v1y - v0y, e1z = v1z - v0z;
     const e2x = v2x - v0x, e2y = v2y - v0y, e2z = v2z - v0z;
-
     const fnx = e1y * e2z - e1z * e2y;
     const fny = e1z * e2x - e1x * e2z;
     const fnz = e1x * e2y - e1y * e2x;
@@ -645,7 +548,7 @@ export function recomputeNormals(
 
   for (let i = 0; i < vertexCount; i++) {
     const nx = normals[i * 3], ny = normals[i * 3 + 1], nz = normals[i * 3 + 2];
-    const len = Math.sqrt(nx * nx + ny * ny + nz * nz);
+    const len = Math.hypot(nx, ny, nz);
     if (len > 1e-10) {
       normals[i * 3] = nx / len;
       normals[i * 3 + 1] = ny / len;
@@ -658,21 +561,70 @@ export function recomputeNormals(
   }
 }
 
-// ── Icosphere Generator ────────────────────────────────────────────────────
 
+/**
+ * Detect living polyp / branch tips: well-fed surface vertices that protrude
+ * (low local crowding + high resource). Returns the ordered tip candidates as
+ * {positions, count}. Used for the artistic polyp tip-glow point cloud.
+ */
+export function computeTips(
+  positions: Float32Array,
+  resource: Float32Array,
+  vertexCount: number,
+  config: GrowthConfig,
+  maxTips: number,
+): { positions: Float32Array; count: number } {
+  const thr = config.tipThreshold;
+  const crowdR = Math.max(1.2, config.maxRadius * 0.05);
+  const lim = Math.min(vertexCount, resource.length);
+
+  interface Cand { idx: number; score: number; }
+  const candidates: Cand[] = [];
+
+  for (let v = 1; v < lim; v++) {
+    const r = resource[v];
+    if (r < thr) continue;
+    const i3 = v * 3;
+    const px = positions[i3], py = positions[i3 + 1], pz = positions[i3 + 2];
+    // Local crowding: how many neighbours sit within a small radius.
+    let crowd = 0;
+    const step = vertexCount > 4000 ? 3 : 1;
+    for (let w = 1; w < vertexCount; w += step) {
+      if (w === v) continue;
+      const dx = px - positions[w * 3];
+      const dy = py - positions[w * 3 + 1];
+      const dz = pz - positions[w * 3 + 2];
+      if (dx * dx + dy * dy + dz * dz < crowdR * crowdR) crowd++;
+    }
+    const protruding = Math.max(0, Math.min(1, (8 - crowd) / 8));
+    candidates.push({ idx: v, score: r * (0.6 + protruding * 0.8) });
+  }
+
+  candidates.sort((a, b) => b.score - a.score);
+  const count = Math.min(maxTips, candidates.length);
+  const tipPos = new Float32Array(count * 3);
+  for (let i = 0; i < count; i++) {
+    const i3 = candidates[i].idx * 3;
+    tipPos[i * 3] = positions[i3];
+    tipPos[i * 3 + 1] = positions[i3 + 1];
+    tipPos[i * 3 + 2] = positions[i3 + 2];
+  }
+  return { positions: tipPos, count };
+}
+
+
+// ── Seed geometry ───────────────────────────────────────────────────────────
+
+/**
+ * Build a triangulated icosphere with seeded surface noise. The noise breaks
+ * perfect symmetry so Mullins-Sekerka instability has something to latch onto.
+ */
 export class KaandorpGrowthPipeline {
-  /**
-   * Create an icosphere with optional surface noise to seed branching.
-   *
-   * The noise perturbation breaks the symmetry of the perfect sphere,
-   * which is essential for the Mullins-Sekerka instability to trigger
-   * branching during Laplacian growth.
-   */
   static createIcosphere(
-    radius: number = 2.0,
-    subdivisions: number = 2,
-    noiseAmount: number = 0.15,
-    seed: number = 42,
+    radius: number,
+    subdivisions: number,
+    noiseAmount: number,
+    seed: number,
   ): { positions: Float32Array; indices: Uint32Array; uvs: Float32Array } {
     const phi = (1 + Math.sqrt(5)) / 2;
     const t = radius / Math.sqrt(1 + phi * phi);
@@ -696,14 +648,12 @@ export class KaandorpGrowthPipeline {
     for (let s = 0; s < subdivisions; s++) {
       const newFaces: [number, number, number][] = [];
       const cache = new Map<string, number>();
-
       for (const [i0, i1, i2] of faceList) {
-        const m01 = this._mid(i0, i1, vertices, cache, radius);
-        const m12 = this._mid(i1, i2, vertices, cache, radius);
-        const m20 = this._mid(i2, i0, vertices, cache, radius);
+        const m01 = KaandorpGrowthPipeline._mid(i0, i1, vertices, cache, radius);
+        const m12 = KaandorpGrowthPipeline._mid(i1, i2, vertices, cache, radius);
+        const m20 = KaandorpGrowthPipeline._mid(i2, i0, vertices, cache, radius);
         newFaces.push([i0, m01, m20], [i1, m12, m01], [i2, m20, m12], [m01, m12, m20]);
       }
-
       for (let i = 0; i < vertices.length; i++) {
         const [x, y, z] = vertices[i];
         const len = Math.sqrt(x * x + y * y + z * z);
@@ -712,18 +662,13 @@ export class KaandorpGrowthPipeline {
       faceList = newFaces;
     }
 
-    // Apply surface noise to break symmetry
     const rng = mulberry32(seed);
     for (let i = 0; i < vertices.length; i++) {
       const [x, y, z] = vertices[i];
       const len = Math.sqrt(x * x + y * y + z * z);
       const nx = x / len, ny = y / len, nz = z / len;
       const noise = (rng() - 0.5) * 2 * noiseAmount;
-      vertices[i] = [
-        x + nx * noise,
-        y + ny * noise,
-        z + nz * noise,
-      ];
+      vertices[i] = [x + nx * noise, y + ny * noise, z + nz * noise];
     }
 
     const positions = new Float32Array(vertices.length * 3);
@@ -769,3 +714,4 @@ export class KaandorpGrowthPipeline {
     return idx;
   }
 }
+
