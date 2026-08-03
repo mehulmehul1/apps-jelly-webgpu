@@ -54,15 +54,6 @@ interface RingData {
   radius: number;
 }
 
-interface TentacleChainData {
-  /** Vertex index of the first particle in this chain. */
-  start: number;
-  /** Number of particles in this chain. */
-  count: number;
-  /** Vertex index of the stalk particle this chain attaches to. */
-  baseIndex: number;
-}
-
 /** A single radial septum (mesentery) spanning the column. */
 interface MesenteryData {
   /** Ordinal index of this mesentery (used for phase offsets). */
@@ -145,6 +136,8 @@ interface AnemoneBehaviorState {
   /** Accumulated interaction force (sustained-contact detection). */
   interactionAccumulator: number;
   lastInteractionForce: number;
+  /** Guards acontia ejection to once per AGONISTIC episode. */
+  acontiaTriggered: boolean;
 }
 
 /** Transition helper with hysteresis guard. */
@@ -401,7 +394,6 @@ export const anemoneArchetype: CreatureArchetype = {
 
     // ── 3. Tentacle crown ────────────────────────────────────────────────
     const topRing = rings[ringCount - 1];
-    const chainLength = Math.max(3, tentacles.count);
 
     // Collect attachment indices based on arrangement.
     let attachIndices: number[] = [];
@@ -718,6 +710,7 @@ export const anemoneArchetype: CreatureArchetype = {
         trigger: 'none',
         interactionAccumulator: 0,
         lastInteractionForce: 0,
+        acontiaTriggered: false,
       },
     };
 
@@ -860,9 +853,23 @@ export const anemoneArchetype: CreatureArchetype = {
           break;
         case 'AGONISTIC':
           if (behavior.stateTimer > 30) transitionTo(behavior, 'IDLE', 'recovery');
+          // Re-arm the acontia capsule flag the moment defense ends (handled on
+          // exit below), but never retrigger mid-episode.
           break;
         default:
           break;
+      }
+
+      // Tier 2: acontia ejection. While defensive (AGONISTIC) we fire the
+      // pre-allocated folded acontia chains out through the cinclides exactly
+      // once per episode, then re-arm once the anemone leaves defense.
+      if (behavior.currentState === 'AGONISTIC') {
+        if (!behavior.acontiaTriggered && gd.acontiaChains) {
+          for (const acontium of gd.acontiaChains) acontium.isEjected = true;
+          behavior.acontiaTriggered = true;
+        }
+      } else {
+        behavior.acontiaTriggered = false;
       }
     }
 
@@ -882,9 +889,9 @@ export const anemoneArchetype: CreatureArchetype = {
           const mesh = tentacleMeshRefs[ti];
           const meshData = newMeshes[ti];
           if (mesh && mesh.geometry) {
-            const posAttr = mesh.geometry.getAttribute('position');
-            const posPrevAttr = mesh.geometry.getAttribute('positionPrev');
-            const normAttr = mesh.geometry.getAttribute('normal');
+            const posAttr = mesh.geometry.getAttribute('position') as THREE.BufferAttribute | null;
+            const posPrevAttr = mesh.geometry.getAttribute('positionPrev') as THREE.BufferAttribute | null;
+            const normAttr = mesh.geometry.getAttribute('normal') as THREE.BufferAttribute | null;
             if (posAttr && posPrevAttr) {
               // Copy current position to positionPrev (for interpolation).
               posPrevAttr.copyArray(posAttr.array);
