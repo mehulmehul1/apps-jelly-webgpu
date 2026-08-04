@@ -258,6 +258,26 @@ export const SURFACE_TREATMENTS: SurfaceTreatment[] = [
 ];
 
 // ──────────────────────────────────────────
+// Body tweaks (global — applied to every identity)
+// ──────────────────────────────────────────
+
+/**
+ * The "physical mold" levers that exist for EVERY vessel, independent of
+ * order/section/surface: bell dimensions, ring topology, symmetry.
+ * These were previously hidden behind DEFAULT_GEOMETRY_CONFIG — now they're
+ * sampled per-seed and exposed as hero sliders.
+ */
+export const BODY_TWEAKS: Tweak[] = [
+  { key: 'size', label: 'size', min: 10, max: 120, step: 1, fmt: fmtInt },
+  { key: 'ribsCount', label: 'rib rings', min: 6, max: 60, step: 1, fmt: fmtInt },
+  { key: 'totalSegments', label: 'ring detail', min: 12, max: 96, step: 2, fmt: fmtInt },
+  { key: 'ribRadius', label: 'base radius', min: 2, max: 40, step: 0.5, fmt: fmtPlain },
+  { key: 'twist', label: 'twist', min: 0, max: 1.5, step: 0.05, fmt: fmtPlain },
+  { key: 'symmetryOrder', label: 'symmetry order', min: 1, max: 24, step: 1, fmt: fmtInt },
+  { key: 'symmetryBreaking', label: 'imperfection', min: 0, max: 1, step: 0.05, fmt: fmtPlain },
+];
+
+// ──────────────────────────────────────────
 // Seeded param sampling for each axis
 // ──────────────────────────────────────────
 
@@ -277,6 +297,14 @@ export interface VesselParams {
     lobes?: { count: number; amplitude: number; radiusScale?: number };
   };
   symmetryOrder: number;
+  symmetryBreaking: number;
+  /** Global bell topology (previously DEFAULT_GEOMETRY_CONFIG only). */
+  geometry: {
+    size: number;
+    ribsCount: number;
+    totalSegments: number;
+    ribRadius: number;
+  };
 }
 
 /**
@@ -307,6 +335,10 @@ export function sampleVesselParams(
     // Plain surface = truly plain: symmetry order 1 suppresses the auto-ridge
     // fallback in getRadialMod, so the blank mold stays perfectly smooth.
     symmetryOrder: surfaceId === 'plain' ? 1 : 1 + Math.floor(rng() * 6),
+    // Placeholders — real body values are sampled last (below) so existing
+    // axis draws keep their exact seeded values.
+    symmetryBreaking: 0,
+    geometry: { size: 40, ribsCount: 20, totalSegments: 36, ribRadius: 15 },
   };
 
   switch (sectionId) {
@@ -345,6 +377,20 @@ export function sampleVesselParams(
       };
       break;
   }
+
+  // ── Body geometry (drawn LAST so the seeded axis values above stay stable) ──
+  // Fuller variety around DEFAULT_GEOMETRY_CONFIG (size 40, ribs 20, segments
+  // 36, ribRadius 15): the shelf reads more distinct per tile. Bounded so the
+  // worst-case bulb particle count (ribsCount × totalSegments ≈ 30×46) stays
+  // reasonable across the 96 static tiles.
+  params.geometry = {
+    size: 28 + rng() * 24, // 28-52 (default 40)
+    ribsCount: 14 + Math.floor(rng() * 17), // 14-30 (default 20)
+    totalSegments: 24 + Math.floor(rng() * 12) * 2, // 24-46 even (default 36)
+    ribRadius: 10 + rng() * 10, // 10-20 (default 15)
+  };
+  // Plain molds stay perfectly smooth; treated surfaces get a hint of wobble.
+  params.symmetryBreaking = surfaceId === 'plain' ? 0 : rng() * 0.35;
 
   void seed;
   return params;
@@ -394,7 +440,7 @@ export function applyVesselParams(
   spec.symmetry = {
     kind: 'radial',
     order: params.symmetryOrder,
-    breaking: 0,
+    breaking: params.symmetryBreaking,
     phase: params.section.rotation,
   };
 
@@ -402,6 +448,10 @@ export function applyVesselParams(
   spec.features = { tail: false, mouth: false, tentacles: false };
   spec.geometry = {
     ...(spec.geometry ?? {}),
+    size: params.geometry.size,
+    ribsCount: Math.round(params.geometry.ribsCount),
+    totalSegments: Math.round(params.geometry.totalSegments),
+    ribRadius: params.geometry.ribRadius,
     tentacleSegments: 0,
     tailArmSegments: 0,
     tailRibsCount: 0,

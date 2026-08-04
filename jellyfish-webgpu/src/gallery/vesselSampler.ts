@@ -17,6 +17,7 @@ import { validateCreatureSpec } from '../jellyfish/creatures';
 import {
   sampleVesselParams,
   applyVesselParams,
+  BODY_TWEAKS,
   ORDER_FAMILIES,
   type SectionKind,
   type SurfaceKind,
@@ -91,10 +92,11 @@ export function sampleVesselSpec(
   return { spec: spec as JellyfishSpec, warnings, values: readTweakValues(req, params) };
 }
 
-/** All tweak keys relevant to this identity (order + section + surface). */
+/** All tweak keys relevant to this identity (body + order + section + surface). */
 export function tweakKeysFor(req: VesselIdentity): string[] {
   const order = ORDER_FAMILIES.find((o) => o.id === req.orderId);
   return [
+    ...BODY_TWEAKS.map((t) => t.key),
     ...(order?.tweaks.map((t) => t.key) ?? []),
     ...sectionTweakTable(req.sectionId).map((t) => t.key),
     ...surfaceTweakTable(req.surfaceId).map((t) => t.key),
@@ -146,6 +148,15 @@ function readTweakValues(
     values['sfN3'] = params.section.sf.n3;
   }
 
+  // Body (global) values — always present regardless of surface/section.
+  values['size'] = params.geometry.size;
+  values['ribsCount'] = params.geometry.ribsCount;
+  values['totalSegments'] = params.geometry.totalSegments;
+  values['ribRadius'] = params.geometry.ribRadius;
+  values['twist'] = params.section.twist;
+  values['symmetryOrder'] = params.symmetryOrder;
+  values['symmetryBreaking'] = params.symmetryBreaking;
+
   // Surface values
   if (params.surface.ridges) {
     values['ridgeCount'] = params.surface.ridges.count;
@@ -167,12 +178,18 @@ function readTweakValues(
 /**
  * Route tweak values into the params object. Each tweak's key is namespaced by
  * its family (e.g. `coneExponent`, `sfM`, `frillAmp`) so a flat map works.
+ * Body tweaks (size, ribsCount, etc.) are global — applied before family tweaks.
  */
 function applyTweaksToParams(
   req: VesselRequest,
   tweaks: Record<string, number>,
   params: ReturnType<typeof sampleVesselParams>,
 ): void {
+  // Global body tweaks — always applicable regardless of identity.
+  for (const t of BODY_TWEAKS) {
+    if (tweaks[t.key] !== undefined) applyBodyTweak(t, tweaks[t.key], params);
+  }
+
   // Order family tweaks
   const order = ORDER_FAMILIES.find((o) => o.id === req.orderId);
   if (order) {
@@ -224,6 +241,38 @@ function applyMoldTweaks(
     pts.push([t, Math.max(0.06, Math.min(1, v))]);
   }
   params.profile = { kind: 'polyline', points: pts };
+}
+
+/**
+ * Apply a single global body tweak to the vessel params.
+ * These levers exist for every vessel regardless of order/section/surface.
+ */
+function applyBodyTweak(t: Tweak, v: number, params: ReturnType<typeof sampleVesselParams>): void {
+  switch (t.key) {
+    case 'size':
+      params.geometry.size = Math.round(v);
+      break;
+    case 'ribsCount':
+      params.geometry.ribsCount = Math.round(v);
+      break;
+    case 'totalSegments':
+      params.geometry.totalSegments = Math.round(v);
+      break;
+    case 'ribRadius':
+      params.geometry.ribRadius = v;
+      break;
+    case 'twist':
+      params.section.twist = v;
+      break;
+    case 'symmetryOrder':
+      params.symmetryOrder = Math.round(v);
+      break;
+    case 'symmetryBreaking':
+      params.symmetryBreaking = v;
+      break;
+    default:
+      break;
+  }
 }
 
 function clampNum(v: number, min: number, max: number): number {
