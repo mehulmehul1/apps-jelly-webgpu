@@ -85,6 +85,38 @@
     #navlinks a:hover { color: #ffb3d9; border-color: #ffb3d9; }
     #seedlabel { font-size: 11px; color: #5d6a8f; }
 
+    /* ── Top bar actions ─────────────────── */
+    #topbar-actions {
+      display: flex;
+      gap: 6px;
+      align-items: center;
+    }
+    .topbar-btn {
+      font-family: inherit;
+      font-size: 11px;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      padding: 6px 12px;
+      border-radius: 5px;
+      border: 1px solid rgba(120, 130, 180, 0.25);
+      background: transparent;
+      color: #8f99bd;
+      cursor: pointer;
+      transition: all 0.15s ease;
+      display: flex;
+      align-items: center;
+      gap: 5px;
+    }
+    .topbar-btn:hover { color: #e6ecff; background: rgba(255,179,217,0.08); border-color: rgba(255,179,217,0.4); }
+    .topbar-btn.active { color: #0a0610; background: #ffb3d9; font-weight: 600; border-color: #ffb3d9; }
+    .topbar-btn .btn-icon { font-size: 13px; }
+    #saved-count {
+      font-size: 10px;
+      color: #5d6a8f;
+      letter-spacing: 0.08em;
+      margin-left: 4px;
+    }
+
     /* ── Filter bar ──────────────────────────── */
     #filterbar {
       position: fixed;
@@ -200,6 +232,22 @@
       font-weight: 600;
       border-color: #ffb3d9;
     }
+    .style-variant-btn {
+      font-family: inherit;
+      font-size: 10px;
+      letter-spacing: 0.06em;
+      padding: 4px 8px;
+      border-radius: 4px;
+      border: 1px solid rgba(255,179,217,0.3);
+      background: transparent;
+      color: #ffb3d9;
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+    .style-variant-btn:hover {
+      background: rgba(255,179,217,0.14);
+      border-color: #ffb3d9;
+    }
     .slider-row { margin-bottom: 10px; }
     .slider-head {
       display: flex;
@@ -241,6 +289,12 @@
       cursor: pointer;
     }
     .ghost-btn:hover { background: rgba(255,179,217,0.12); }
+    #hero-save.saved {
+      background: rgba(255,179,217,0.2);
+      border-color: #ffb3d9;
+      color: #ffb3d9;
+      font-weight: 600;
+    }
 
     /* Scrollbar */
     #heropanel::-webkit-scrollbar { width: 5px; }
@@ -254,6 +308,18 @@
     <div id="navlinks">
       <span id="seedlabel">seed —</span>
       <a href="/" id="to-viewer">→ viewer</a>
+    </div>
+    <div id="topbar-actions">
+      <button class="topbar-btn" id="btn-view-all" title="Show all forms">
+        <span class="btn-icon">◧</span> All
+      </button>
+      <button class="topbar-btn" id="btn-view-saved" title="Show saved forms only">
+        <span class="btn-icon">♥</span> Saved
+        <span id="saved-count"></span>
+      </button>
+      <button class="topbar-btn" id="btn-randomize" title="Randomize seed for new variations">
+        <span class="btn-icon">⟳</span> Randomize
+      </button>
     </div>
   </div>
 
@@ -273,14 +339,14 @@
     <div id="filter-count">—</div>
   </div>
 
-  <div id="hint">drag to orbit · scroll to zoom · click a vessel to inspect</div>
-
+  <div id="hint">drag to orbit · scroll to zoom · click a vessel to inspect · pulse & spin via the motion pane</div>
   <div id="heropanel">
     <div id="hero-title">—</div>
     <div id="hero-sub">—</div>
     <div id="hero-surface"></div>
     <div id="hero-sliders"></div>
     <div id="hero-actions">
+      <button class="ghost-btn" id="hero-save" title="Save this form to your collection">♥ save</button>
       <button class="ghost-btn" id="hero-reroll">↻ re-roll</button>
       <button class="ghost-btn" id="hero-back">← back to grid</button>
     </div>
