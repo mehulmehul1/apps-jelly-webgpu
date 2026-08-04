@@ -1137,8 +1137,14 @@ export class JellyfishGeometry {
   // Helper methods
   // ...................................................
   private ribAt(index: number): RibData {
-    return this.tailRibs[this.tailRibs.length - index - 1] ||
-      this.ribs[this.ribs.length - index + this.tailRibs.length - 1];
+    const tailRib = this.tailRibs[this.tailRibs.length - index - 1];
+    if (tailRib) return tailRib;
+    const bulbRib = this.ribs[this.ribs.length - index + this.tailRibs.length - 1];
+    if (bulbRib) return bulbRib;
+    // Safe fallback: never let an emitter resolve an index past the actual rib
+    // pool (e.g. tail disabled → tailRibs empty). Throwing here aborts the whole
+    // tile grid mid-build, so clamp to the last bulb rib instead.
+    return this.ribs[this.ribs.length - 1];
   }
 
   private queueConstraints(...constraints: (Particulate.Constraint | Particulate.Constraint[])[]): void {
