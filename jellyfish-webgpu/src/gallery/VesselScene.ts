@@ -26,6 +26,8 @@ import {
   TentacleNodeMaterial,
 } from '../jellyfish/materials';
 import type { JellyfishSpec } from '../jellyfish/creatures';
+import { createCreatureRig } from '../jellyfish/creatures/CreatureFactory';
+import { DEFAULT_MATERIAL_RECIPE, hexToNumber, type GalleryMaterialRecipe } from './materials';
 
 export interface GalleryTile {
   id: string;
@@ -34,6 +36,13 @@ export interface GalleryTile {
   group: THREE.Group;
   hitBox: THREE.Mesh;
   geometryData: JellyfishGeometryData;
+}
+
+export interface GalleryTileDefinition {
+  id: string;
+  label: string;
+  spec: JellyfishSpec;
+  materials?: GalleryMaterialRecipe;
 }
 
 export interface GalleryView {
@@ -79,6 +88,7 @@ export class VesselScene {
   };
   private targetView: GalleryView = { ...this.view, target: this.view.target.clone() };
   private dragging = false;
+  private activePointerId: number | null = null;
   private lastPointer = { x: 0, y: 0 };
 
   private canvas: HTMLCanvasElement;
@@ -116,7 +126,7 @@ export class VesselScene {
    * Rebuild the whole grid from a list of tile definitions.
    * Disposes previous tiles first.
    */
-  setTiles(defs: Array<{ id: string; label: string; spec: JellyfishSpec }>): void {
+  setTiles(defs: GalleryTileDefinition[]): void {
     this.clearTiles();
     const cols = Math.min(this.opts.gridCols, Math.max(1, defs.length));
     const rows = Math.ceil(defs.length / cols);
@@ -142,7 +152,7 @@ export class VesselScene {
   }
 
   /** Replace a single tile in place (hero tweaks / re-roll). */
-  replaceTile(id: string, def: { id: string; label: string; spec: JellyfishSpec }): GalleryTile | null {
+  replaceTile(id: string, def: GalleryTileDefinition): GalleryTile | null {
     const old = this.tileLookup.get(id);
     if (!old) return null;
 
@@ -160,9 +170,18 @@ export class VesselScene {
     return tile;
   }
 
-  private buildTile(def: { id: string; label: string; spec: JellyfishSpec }, x: number, y: number): GalleryTile {
-    const gd = JellyfishGeometry.create(def.spec);
-    const group = this.buildVesselGroup(gd);
+  private buildTile(def: GalleryTileDefinition, x: number, y: number): GalleryTile {
+    const rig = createCreatureRig(def.spec);
+    const primary = rig.units[0];
+    const gd = JellyfishGeometry.create(primary.spec);
+    const group = new THREE.Group();
+    for (const unit of rig.units) {
+      const unitGeometry = unit === primary ? gd : JellyfishGeometry.create(unit.spec);
+      const unitGroup = this.buildVesselGroup(unitGeometry, def.materials ?? DEFAULT_MATERIAL_RECIPE);
+      unitGroup.position.set(unit.transform.position.x, unit.transform.position.y, unit.transform.position.z);
+      unitGroup.scale.setScalar(unit.transform.scale);
+      group.add(unitGroup);
+    }
 
     // Invisible hit proxy for selection (robust from any orbit angle).
     const hitBox = new THREE.Mesh(
@@ -181,7 +200,7 @@ export class VesselScene {
    * Mirror of JellyfishArchetype.buildMeshes, but vessel-only: bulb + gel
    * overlay (+ subtle structural lines). No tail/mouth/tentacles.
    */
-  private buildVesselGroup(gd: JellyfishGeometryData): THREE.Group {
+  private buildVesselGroup(gd: JellyfishGeometryData, materials: GalleryMaterialRecipe): THREE.Group {
     const group = new THREE.Group();
     const s = this.opts.tileScale;
 
@@ -195,9 +214,9 @@ export class VesselScene {
     bulbGeo.computeVertexNormals();
 
     const bulbMaterial = new BulbNodeMaterial();
-    bulbMaterial.setDiffuse(0xFFA9D2);
-    bulbMaterial.setDiffuseB(0x70256C);
-    bulbMaterial.setOpacity(0.78);
+    bulbMaterial.setDiffuse(hexToNumber(materials.bulb.colorA));
+    bulbMaterial.setDiffuseB(hexToNumber(materials.bulb.colorB ?? materials.bulb.colorA));
+    bulbMaterial.setOpacity(materials.bulb.opacity);
 
     const bulbMesh = new THREE.Mesh(bulbGeo, bulbMaterial);
     bulbMesh.scale.setScalar(0.95 * s);
@@ -212,7 +231,7 @@ export class VesselScene {
     gelGeo.setIndex(gd.faces.bulb);
     gelGeo.computeVertexNormals();
 
-    const gelMaterial = new GelNodeMaterial({ diffuse: 0x415AB5, opacity: 0.28 });
+    const gelMaterial = new GelNodeMaterial({ diffuse: hexToNumber(materials.gel.colorA), opacity: materials.gel.opacity });
     gelMaterial.setStepProgress(1);
 
     const gelMesh = new THREE.Mesh(gelGeo, gelMaterial);
@@ -249,9 +268,10 @@ export class VesselScene {
       tailGeo.computeVertexNormals();
 
       const tailMaterial = new TailNodeMaterial();
-      tailMaterial.setDiffuse(0xE4BBEE);
-      tailMaterial.setDiffuseB(0x241138);
-      tailMaterial.updateOpacity(0.75);
+      tailMaterial.setDiffuse(hexToNumber(materials.tail.colorA));
+      tailMaterial.setDiffuseB(hexToNumber(materials.tail.colorB ?? materials.tail.colorA));
+      tailMaterial.updateOpacity(materials.tail.opacity);
+      if (materials.tail.scale !== undefined) tailMaterial.setScale(materials.tail.scale);
 
       const tailMesh = new THREE.Mesh(tailGeo, tailMaterial);
       tailMesh.scale.setScalar(0.95 * s);
@@ -269,10 +289,10 @@ export class VesselScene {
       mouthGeo.computeVertexNormals();
 
       const mouthMaterial = new TailNodeMaterial();
-      mouthMaterial.setDiffuse(0xEFA6F0);
-      mouthMaterial.setDiffuseB(0x4A67CE);
-      mouthMaterial.setScale(3);
-      mouthMaterial.updateOpacity(0.65);
+      mouthMaterial.setDiffuse(hexToNumber(materials.mouth.colorA));
+      mouthMaterial.setDiffuseB(hexToNumber(materials.mouth.colorB ?? materials.mouth.colorA));
+      mouthMaterial.setScale(materials.mouth.scale ?? 3);
+      mouthMaterial.updateOpacity(materials.mouth.opacity);
 
       const mouthMesh = new THREE.Mesh(mouthGeo, mouthMaterial);
       group.add(mouthMesh);
@@ -281,20 +301,20 @@ export class VesselScene {
     // ── Tentacle meshes ───────────────────────────────────
     const tentacleStyle = (gd.spec as JellyfishSpec).tentacleStyle ?? 'curtain';
     const tentacleMaterial = new TentacleNodeMaterial({
-      color: 0x997299,
+      color: hexToNumber(materials.tentacle.colorA),
       transparent: true,
-      opacity: 0.25,
+      opacity: materials.tentacle.opacity,
       depthTest: true,
       depthWrite: false,
-      useGlow: tentacleStyle !== 'tube',
+      useGlow: materials.tentacle.glow ?? tentacleStyle !== 'tube',
     });
-    tentacleMaterial.setArea(2000);
+    tentacleMaterial.setArea(materials.tentacle.area ?? 2000);
     const tubeTentacleMaterial =
       tentacleStyle === 'tube'
         ? new TentacleNodeMaterial({
-            color: 0x997299,
+            color: hexToNumber(materials.tentacle.colorA),
             transparent: true,
-            opacity: 0.25,
+            opacity: materials.tentacle.opacity,
             depthTest: true,
             depthWrite: false,
             useGlow: false,
@@ -521,8 +541,9 @@ export class VesselScene {
 
   private bindEvents(): void {
     this.canvas.addEventListener('pointerdown', this.onPointerDown);
-    window.addEventListener('pointermove', this.onPointerMove);
-    window.addEventListener('pointerup', this.onPointerUp);
+    this.canvas.addEventListener('pointermove', this.onPointerMove);
+    this.canvas.addEventListener('pointerup', this.onPointerUp);
+    this.canvas.addEventListener('pointercancel', this.onPointerCancel);
     this.canvas.addEventListener('wheel', this.onWheel, { passive: false });
     this.canvas.addEventListener('pointerleave', () => {
       this.pointer.set(-2, -2);
@@ -530,37 +551,42 @@ export class VesselScene {
   }
 
   private onPointerDown = (ev: PointerEvent): void => {
+    if (ev.currentTarget !== this.canvas) return;
+    this.activePointerId = ev.pointerId;
     this.dragging = true;
     this.lastPointer = { x: ev.clientX, y: ev.clientY };
     this.canvas.setPointerCapture?.(ev.pointerId);
   };
 
   private onPointerMove = (ev: PointerEvent): void => {
+    if (ev.currentTarget !== this.canvas || ev.pointerId !== this.activePointerId) return;
     const rect = this.canvas.getBoundingClientRect();
     this.pointer.set(
       ((ev.clientX - rect.left) / rect.width) * 2 - 1,
       -((ev.clientY - rect.top) / rect.height) * 2 + 1,
     );
-
     if (!this.dragging) return;
     const dx = ev.clientX - this.lastPointer.x;
     const dy = ev.clientY - this.lastPointer.y;
     this.lastPointer = { x: ev.clientX, y: ev.clientY };
-
-    // Dragging orbits (azimuth + elevation), even in hero view.
     this.targetView.azimuth -= dx * 0.0025;
     this.targetView.elevation += dy * 0.0025;
   };
 
   private onPointerUp = (ev: PointerEvent): void => {
-    if (!this.dragging) {
-      this.pickTile();
-      return;
-    }
-    // If the pointer barely moved, treat as a click.
+    if (ev.currentTarget !== this.canvas || ev.pointerId !== this.activePointerId) return;
     const moved = Math.hypot(ev.clientX - this.lastPointer.x, ev.clientY - this.lastPointer.y);
+    this.canvas.releasePointerCapture?.(ev.pointerId);
+    this.activePointerId = null;
     this.dragging = false;
     if (moved < 4) this.pickTile();
+  };
+
+  private onPointerCancel = (ev: PointerEvent): void => {
+    if (ev.pointerId !== this.activePointerId) return;
+    this.canvas.releasePointerCapture?.(ev.pointerId);
+    this.activePointerId = null;
+    this.dragging = false;
   };
 
   private onWheel = (ev: WheelEvent): void => {
@@ -617,8 +643,9 @@ export class VesselScene {
     this.clearTiles();
     window.removeEventListener('resize', this.onResize);
     this.canvas.removeEventListener('pointerdown', this.onPointerDown);
-    window.removeEventListener('pointermove', this.onPointerMove);
-    window.removeEventListener('pointerup', this.onPointerUp);
+    this.canvas.removeEventListener('pointermove', this.onPointerMove);
+    this.canvas.removeEventListener('pointerup', this.onPointerUp);
+    this.canvas.removeEventListener('pointercancel', this.onPointerCancel);
     this.canvas.removeEventListener('wheel', this.onWheel);
     this.renderer.dispose();
   }

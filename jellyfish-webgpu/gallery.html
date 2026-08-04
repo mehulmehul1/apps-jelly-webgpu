@@ -5,6 +5,21 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Vessel Gallery — Jellyfish Form Grammar</title>
   <style>
+    :root {
+      --space-1: 4px;
+      --space-2: 8px;
+      --space-3: 12px;
+      --space-4: 16px;
+      --space-5: 24px;
+      --space-6: 32px;
+      --space-7: 48px;
+      --border-soft: rgba(120,130,180,0.18);
+      --border-focus: rgba(255,179,217,0.68);
+      --text-muted: #7f8bb3;
+      --text-dim: #657195;
+      --accent: #ffb3d9;
+      --ease-ui: 180ms ease-out;
+    }
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
       margin: 0;
@@ -92,11 +107,12 @@
       align-items: center;
     }
     .topbar-btn {
+      min-height: 36px;
       font-family: inherit;
       font-size: 11px;
       letter-spacing: 0.1em;
       text-transform: uppercase;
-      padding: 6px 12px;
+      padding: var(--space-2) var(--space-3);
       border-radius: 5px;
       border: 1px solid rgba(120, 130, 180, 0.25);
       background: transparent;
@@ -256,7 +272,7 @@
       color: #aab4d6;
       margin-bottom: 3px;
     }
-    .slider-head .val { color: #ffb3d9; }
+    .slider-head .val { color: #ffb3d9; font-variant-numeric: tabular-nums; }
     .slider-row input[type=range] {
       width: 100%;
       height: 3px;
@@ -296,63 +312,169 @@
       font-weight: 600;
     }
 
+    .mode-btn { text-transform: none; letter-spacing: 0.04em; }
+    .studio-meta { font-size: 9px; color: #68749b; line-height: 1.5; margin-bottom: 12px; }
+    .studio-section { margin: 10px 0 12px; }
+    .studio-section-title { font-size: 9px; letter-spacing: 0.16em; text-transform: uppercase; color: #5d6a8f; margin-bottom: 7px; }
+    .module-tray { display: grid; grid-template-columns: repeat(3, 1fr); gap: 5px; }
+    .module-btn { font: inherit; font-size: 9px; padding: 7px 4px; border: 1px solid rgba(120,130,180,0.25); border-radius: 5px; background: transparent; color: #8f99bd; cursor: pointer; }
+    .module-btn.active { color: #0a0610; background: #ffb3d9; border-color: #ffb3d9; }
+    .module-btn:hover { color: #e6ecff; border-color: rgba(255,179,217,0.55); }
+    .module-btn small { display: block; opacity: 0.7; margin-top: 3px; }
+    .hero-analysis { border-top: 1px solid rgba(120,130,180,0.16); margin-top: 12px; padding-top: 10px; font-size: 10px; color: #91a0c7; line-height: 1.45; }
+    .analysis-budget { color: #ffb3d9; letter-spacing: 0.06em; text-transform: uppercase; font-size: 9px; margin-bottom: 5px; }
+    .analysis-warning { color: #f0c58a; margin-top: 4px; }
+    .analysis-info { color: #8593ba; margin-top: 4px; }
+    .laboratory .studio-meta, .laboratory .hero-analysis { color: #d6dcef; }
+    .laboratory #hero-sliders .slider-head::after { content: ' · technical'; color: #68749b; font-size: 9px; }
+    #studio-toast { position: fixed; left: 50%; bottom: 42px; transform: translateX(-50%); z-index: 20; padding: 8px 12px; border: 1px solid rgba(255,179,217,0.35); border-radius: 6px; background: rgba(10,12,24,0.9); color: #ffb3d9; font-size: 10px; opacity: 0; pointer-events: none; transition: opacity 0.2s; }
+    #studio-toast.visible { opacity: 1; }
+    .laboratory #hero-title { color: #d6dcef; }
+
+    .focus-header { display: flex; gap: 10px; align-items: flex-start; margin-bottom: 10px; }
+    .back-btn { border: 0; background: transparent; color: #8f99bd; font: inherit; font-size: 10px; cursor: pointer; padding: 0; }
+    .workspace-trail { display: flex; gap: 3px; flex-wrap: wrap; margin-bottom: 12px; }
+    .workspace-step { min-height: 40px; border: 1px solid rgba(120,130,180,0.24); background: transparent; color: #7f8bb3; padding: 9px 10px; border-radius: 4px; font: inherit; font-size: 9px; cursor: pointer; transition: border-color var(--ease-ui), color var(--ease-ui), background var(--ease-ui); }
+    .workspace-step.active { background: #ffb3d9; border-color: #ffb3d9; color: #0a0610; font-weight: 600; }
+    .family-strip { display: flex; gap: 5px; overflow-x: auto; margin-bottom: 10px; }
+    .family-chip { min-width: 54px; border: 1px solid rgba(120,130,180,0.24); background: rgba(120,130,180,0.06); color: #8f99bd; padding: 5px; border-radius: 4px; font: inherit; font-size: 8px; cursor: pointer; }
+    .family-chip.active { border-color: #ffb3d9; color: #ffb3d9; }
+    .workspace-promise { color: #dbe1f5; font-size: 12px; line-height: 1.4; margin: 8px 0 14px; }
+    .workspace-heading { color: #ffb3d9; font-size: 10px; letter-spacing: .14em; text-transform: uppercase; margin: 16px 0 8px; }
+    .choice-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 5px; margin-bottom: 12px; }
+    .choice-btn { min-height: 48px; border: 1px solid rgba(120,130,180,0.24); background: transparent; color: #aab4d6; padding: 9px 8px; border-radius: 5px; font: inherit; font-size: 9px; cursor: pointer; text-align: left; transition: border-color var(--ease-ui), color var(--ease-ui), background var(--ease-ui), transform 120ms ease-out; }
+    .choice-btn:active, .rail-btn:active, .topbar-btn:active, .workspace-step:active { transform: scale(.98); }
+    .choice-btn small { display: block; color: #657195; margin-top: 4px; line-height: 1.35; }
+    .choice-btn.active { background: rgba(255,179,217,0.16); border-color: #ffb3d9; color: #ffb3d9; }
+    .choice-btn:hover { border-color: rgba(255,179,217,0.7); }
+    .advanced-panel { border-top: 1px solid rgba(120,130,180,0.16); margin-top: 12px; padding-top: 8px; }
+    .advanced-panel summary { color: #7f8bb3; cursor: pointer; font-size: 9px; letter-spacing: .12em; text-transform: uppercase; }
+    .material-card { border: 1px solid rgba(120,130,180,0.18); border-radius: 6px; padding: 8px; margin-bottom: 7px; }
+    .material-card-title { color: #ffb3d9; font-size: 10px; margin-bottom: 7px; }
+    .material-card input[type=color] { width: 28px; height: 22px; border: 0; background: transparent; vertical-align: middle; }
+    .study-sheet { position: fixed; inset: 90px 50% auto 50%; transform: translateX(-50%); width: min(560px, calc(100vw - 32px)); max-height: calc(100vh - 130px); overflow: auto; z-index: 15; display: none; padding: 18px; border: 1px solid rgba(255,179,217,0.28); border-radius: 10px; background: rgba(10,12,24,0.96); backdrop-filter: blur(10px); }
+    .study-sheet.visible { display: block; }
+    .study-row { display: block; border: 1px solid rgba(120,130,180,0.2); background: transparent; color: #aab4d6; padding: 9px; border-radius: 5px; margin-bottom: 5px; cursor: pointer; text-align: left; font: inherit; width: 100%; }
+    .study-row strong { display: block; color: #ffb3d9; font-size: 10px; }
+    .study-row small { display: block; color: #68749b; margin-top: 4px; }
+    .study-row.active { border-color: #ffb3d9; background: rgba(255,179,217,0.1); }
+    .study-controls { margin-top: 12px; border-top: 1px solid rgba(120,130,180,0.16); padding-top: 12px; }
+    .technical-drawer { position: fixed; right: 18px; bottom: 52px; width: 260px; max-height: 55vh; overflow: auto; z-index: 11; display: none; padding: 14px; border: 1px solid rgba(120,130,180,0.24); border-radius: 8px; background: rgba(10,12,24,0.94); color: #9ba8cd; font-size: 10px; line-height: 1.5; }
+    .technical-drawer.visible { display: block; }
+    .laboratory #technical-drawer { display: block; }
+    .laboratory .workspace-promise { color: #d6dcef; }
+    .laboratory .studio-meta { color: #d6dcef; }
+
     /* Scrollbar */
-    #heropanel::-webkit-scrollbar { width: 5px; }
-    #heropanel::-webkit-scrollbar-thumb { background: rgba(255,179,217,0.25); border-radius: 3px; }
+    #heropanel::-webkit-scrollbar, .study-sheet::-webkit-scrollbar, .technical-drawer::-webkit-scrollbar { width: 5px; }
+    #heropanel::-webkit-scrollbar-thumb, .study-sheet::-webkit-scrollbar-thumb, .technical-drawer::-webkit-scrollbar-thumb { background: rgba(255,179,217,0.25); border-radius: 3px; }
+    /* ── Spatial studio shell ───────────────────── */
+    body { overflow: hidden; }
+    #app-shell { height: 100vh; display: grid; grid-template-rows: 54px minmax(0, 1fr) auto; }
+    #studio-header { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 0 18px; border-bottom: 1px solid rgba(120,130,180,0.16); background: #070812; z-index: 20; }
+    .header-center, .header-actions { display: flex; align-items: center; gap: 10px; }
+    .header-center { flex: 1; justify-content: center; }
+    #studio-location { color: #ffb3d9; font-size: 10px; letter-spacing: .16em; }
+    #studio-main { min-height: 0; display: grid; grid-template-columns: 220px minmax(0, 1fr); }
+    #construction-rail { min-width: 0; overflow: auto; padding: 18px 14px; background: #0a0c18; border-right: 1px solid rgba(120,130,180,0.18); z-index: 10; }
+    #specimen-stage { position: relative; min-width: 0; min-height: 0; background: #030308; }
+    #specimen-stage canvas { width: 100%; height: 100%; touch-action: none; }
+    #stage-status { position: absolute; left: 0; right: 0; bottom: 12px; text-align: center; color: #56618a; font-size: 10px; letter-spacing: .12em; pointer-events: none; }
+    .rail-view { display: block; }
+    #focus-rail { display: none; }
+    body.focus-mode #wall-rail { display: none; }
+    body.focus-mode #focus-rail { display: block; }
+    .rail-kicker { color: #657195; font-size: 9px; letter-spacing: .16em; text-transform: uppercase; margin-bottom: 12px; }
+    .rail-title { color: #e2e7f7; font-size: 15px; line-height: 1.35; margin-bottom: 12px; }
+    .rail-count { color: #ffb3d9; font-size: 11px; margin-bottom: 14px; }
+    .rail-actions { display: flex; gap: 5px; margin-bottom: 18px; }
+    .rail-btn { min-height: 36px; flex: 1; border: 1px solid var(--border-soft); background: transparent; color: #aab4d6; padding: var(--space-2) var(--space-1); border-radius: 5px; font: inherit; font-size: 9px; cursor: pointer; transition: border-color var(--ease-ui), color var(--ease-ui), background var(--ease-ui); }
+    .rail-btn:hover, .rail-btn.active { border-color: #ffb3d9; color: #ffb3d9; background: rgba(255,179,217,.08); }
+    .rail-filters .filter-label { margin-top: 14px; }
+    .rail-filters .filter-chips { max-width: none; display: flex; flex-direction: column; align-items: stretch; }
+    .rail-filters .filter-chip { text-align: left; }
+    .focus-identity { margin: 22px 0 18px; }
+    .focus-identity #hero-title { color: #ffb3d9; font-size: 14px; margin-bottom: 5px; }
+    .focus-identity #hero-sub { color: #8f99bd; font-size: 10px; line-height: 1.4; }
+    .construction-label { margin-top: 24px; }
+    .construction-graph { display: flex; flex-direction: column; gap: 6px; }
+    .construction-graph .workspace-step { min-height: 40px; text-align: left; padding: 10px 9px; font-size: 10px; }
+    .construction-graph .workspace-step::after { content: '›'; float: right; color: #657195; }
+    #workbench { min-height: 0; max-height: 310px; background: #0a0c18; border-top: 1px solid rgba(255,179,217,.22); z-index: 12; }
+    body.workbench-collapsed #app-shell { grid-template-rows: 54px minmax(0, 1fr) 36px; }
+    body.workbench-collapsed .workbench-focus { padding: 8px 18px; }
+    body.workbench-collapsed .workbench-cards, body.workbench-collapsed .hero-analysis { display: none; }
+    .workbench-empty { padding: 22px; color: #657195; font-size: 11px; text-align: center; }
+    .workbench-focus { display: none; padding: 12px 18px 16px; }
+    body.focus-mode .workbench-focus { display: block; }
+    body.focus-mode .workbench-empty { display: none; }
+    .workbench-header { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; margin-bottom: 10px; }
+    #workspace-label { color: #ffb3d9; font-size: 12px; letter-spacing: .1em; text-transform: uppercase; }
+    #workspace-promise { color: #8f99bd; font-size: 10px; margin-left: 10px; }
+    .workbench-close { border: 0; background: transparent; color: #657195; font: inherit; font-size: 9px; cursor: pointer; }
+    .workbench-cards { display: flex; gap: 10px; overflow-x: auto; padding-bottom: 4px; }
+    .workbench-cards > .workspace-heading, .workbench-cards > .choice-grid, .workbench-cards > .advanced-panel, .workbench-cards > .slider-row { flex: 0 0 auto; }
+    .workbench-cards .workspace-heading { min-width: 120px; margin: 8px 0; }
+    .workbench-cards .choice-grid { min-width: 230px; max-width: 360px; }
+    .workbench-cards .advanced-panel { min-width: 280px; }
+    .workbench-cards .slider-row { min-width: 180px; margin: 0 8px 0 0; }
+    .workbench-cards .material-card { flex: 0 0 180px; }
+    .workbench-cards .hero-analysis { display: none; }
+    .laboratory #workbench { background: #101323; }
+    .laboratory .workbench-cards::before { content: 'laboratory · technical values available in each card'; color: #8f99bd; font-size: 9px; align-self: center; white-space: nowrap; }
+    #heropanel { display: none !important; }
+    #filterbar, #topbar, #hint { display: none !important; }
+    #technical-drawer { position: fixed; right: 18px; bottom: 330px; }
+    @media (max-width: 760px) { #studio-main { grid-template-columns: 150px minmax(0,1fr); } #construction-rail { padding: 12px 8px; } #studio-header { padding: 0 8px; } .header-center { display: none; } #workbench { max-height: 38vh; } }
+    @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; scroll-behavior: auto !important; transition-duration: 0.01ms !important; } }
   </style>
 </head>
 <body>
-  <div id="topbar">
-    <div id="brand">Vessel Gallery · <b>form grammar</b></div>
-    <div id="layerbar"></div>
-    <div id="navlinks">
-      <span id="seedlabel">seed —</span>
-      <a href="/" id="to-viewer">→ viewer</a>
-    </div>
-    <div id="topbar-actions">
-      <button class="topbar-btn" id="btn-view-all" title="Show all forms">
-        <span class="btn-icon">◧</span> All
-      </button>
-      <button class="topbar-btn" id="btn-view-saved" title="Show saved forms only">
-        <span class="btn-icon">♥</span> Saved
-        <span id="saved-count"></span>
-      </button>
-      <button class="topbar-btn" id="btn-randomize" title="Randomize seed for new variations">
-        <span class="btn-icon">⟳</span> Randomize
-      </button>
-    </div>
+  <div id="app-shell">
+    <header id="studio-header">
+      <div id="brand">Samudra · <b>specimen studio</b></div>
+      <div class="header-center"><span id="studio-location">SPECIMEN WALL</span><span id="seedlabel">seed —</span></div>
+      <div class="header-actions">
+        <button class="topbar-btn mode-btn active" id="btn-mode-beautiful">Beautiful</button>
+        <button class="topbar-btn mode-btn" id="btn-mode-laboratory">Laboratory</button>
+        <button class="topbar-btn" id="btn-technical">Technical</button>
+        <button class="topbar-btn" id="btn-randomize">New seed</button>
+      </div>
+    </header>
+    <main id="studio-main">
+      <aside id="construction-rail">
+        <div id="wall-rail" class="rail-view">
+          <div class="rail-kicker">specimen wall</div>
+          <div class="rail-title">Choose a form<br>to begin shaping.</div>
+          <div id="filter-count" class="rail-count">—</div>
+          <div class="rail-actions"><button class="rail-btn" id="btn-view-all">All specimens</button><button class="rail-btn" id="btn-view-saved">Saved <span id="saved-count"></span></button></div>
+          <div class="rail-filters"><div class="filter-label">silhouette</div><div class="filter-chips" id="filters-order"></div><div class="filter-label">cross-section</div><div class="filter-chips" id="filters-section"></div><div class="filter-label">surface</div><div class="filter-chips" id="filters-surface"></div></div>
+        </div>
+        <div id="focus-rail" class="rail-view">
+          <button class="back-btn" id="hero-back">← specimen wall</button>
+          <div class="focus-identity"><div id="hero-title">—</div><div id="hero-sub">—</div><div id="hero-recipe-meta" class="studio-meta"></div></div>
+          <div class="rail-actions"><button class="rail-btn" id="hero-branch">↘ branch</button><button class="rail-btn" id="hero-save">♥ save</button><button class="rail-btn" id="hero-copy">⧉ copy</button></div>
+          <div class="rail-kicker construction-label">construction</div>
+          <div id="workspace-trail" class="construction-graph"></div>
+        </div>
+      </aside>
+      <section id="specimen-stage">
+        <canvas id="gallery-canvas"></canvas>
+        <div id="stage-status">drag the specimen to orbit · scroll to zoom · click a specimen to select</div>
+      </section>
+    </main>
+    <section id="workbench">
+      <div id="wall-workbench" class="workbench-empty">Select a specimen to open the construction workbench.</div>
+      <div id="focus-workbench" class="workbench-focus">
+        <div class="workbench-header"><div><span id="workspace-label">Vessel</span><span id="workspace-promise"></span></div><button class="workbench-close" id="workbench-close">collapse</button></div>
+        <div id="workspace-content" class="workbench-cards"></div>
+        <div id="hero-analysis" class="hero-analysis"></div>
+      </div>
+    </section>
   </div>
-
-  <div id="filterbar">
-    <div class="filter-group">
-      <span class="filter-label">order</span>
-      <div class="filter-chips" id="filters-order"></div>
-    </div>
-    <div class="filter-group">
-      <span class="filter-label">section</span>
-      <div class="filter-chips" id="filters-section"></div>
-    </div>
-    <div class="filter-group">
-      <span class="filter-label">surface</span>
-      <div class="filter-chips" id="filters-surface"></div>
-    </div>
-    <div id="filter-count">—</div>
-  </div>
-
-  <div id="hint">drag to orbit · scroll to zoom · click a vessel to inspect · pulse & spin via the motion pane</div>
-  <div id="heropanel">
-    <div id="hero-title">—</div>
-    <div id="hero-sub">—</div>
-    <div id="hero-surface"></div>
-    <div id="hero-sliders"></div>
-    <div id="hero-actions">
-      <button class="ghost-btn" id="hero-save" title="Save this form to your collection">♥ save</button>
-      <button class="ghost-btn" id="hero-reroll">↻ re-roll</button>
-      <button class="ghost-btn" id="hero-back">← back to grid</button>
-    </div>
-  </div>
-
-  <canvas id="gallery-canvas"></canvas>
+  <aside id="technical-drawer" class="technical-drawer"><div class="studio-section-title">technical drawer</div><div id="technical-content">Select a specimen to inspect recipe, diagnostics, and motion controls.</div></aside>
+  <div id="study-sheet" class="study-sheet"></div>
+  <div id="studio-toast" role="status" aria-live="polite"></div>
   <script type="module" src="/src/gallery/main.ts"></script>
 </body>
 </html>

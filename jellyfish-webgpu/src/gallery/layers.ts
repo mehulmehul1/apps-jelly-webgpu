@@ -13,7 +13,7 @@
  * in order, Vessel first, so later layers see the earlier ones' output.
  */
 
-import type { JellyfishSpec } from '../jellyfish/creatures';
+import { BodyPlan, type JellyfishSpec } from '../jellyfish/creatures';
 import type { LookConfig } from '../editor/look-presets';
 import {
   sampleCharacterParams,
@@ -202,6 +202,7 @@ export const GESTURE_LAYER: FormLayer = {
     { key: 'colonyCount', label: 'colony count', min: 1, max: 12, step: 1, fmt: fmtInt },
     { key: 'colonySpacing', label: 'colony spacing', min: 1, max: 5, step: 0.1, fmt: fmtPlain },
     { key: 'colonyScaleDecay', label: 'colony decay', min: 0.7, max: 1, step: 0.01, fmt: fmtPlain },
+    { key: 'gestureLayout', label: 'colony layout', min: 0, max: 4, step: 1, fmt: fmtInt },
   ],
   owns: ['spine', 'colony'],
   build(io: LayerIO): JellyfishSpec {
@@ -224,14 +225,17 @@ export const GESTURE_LAYER: FormLayer = {
     // Colony layout
     const colonyCount = Math.round(t.colonyCount ?? Math.floor(rng() * 12) + 1);
     if (colonyCount > 1) {
+      const layouts = ['chain', 'arc', 'helix', 'cluster', 'sheet'] as const;
+      const layoutIndex = t.gestureLayout !== undefined ? Math.round(t.gestureLayout) : Math.floor(rng() * layouts.length);
+      spec.bodyPlan = BodyPlan.Siphonophore;
       spec.colony = {
         count: colonyCount,
         spacing: t.colonySpacing ?? 1.5 + rng() * 2,
         scaleDecay: t.colonyScaleDecay ?? 0.7 + rng() * 0.3,
-        layout: (['chain', 'arc', 'helix', 'cluster', 'sheet'] as const)[
-          Math.floor(rng() * 5)
-        ],
+        layout: layouts[Math.max(0, Math.min(layouts.length - 1, layoutIndex))],
       };
+    } else {
+      spec.colony = undefined;
     }
 
     return spec;
