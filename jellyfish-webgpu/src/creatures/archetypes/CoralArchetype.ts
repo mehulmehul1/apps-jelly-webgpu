@@ -39,15 +39,24 @@ import { LookConfig } from '../../editor/look-presets';
 import { registerArchetype } from './archetypeRegistry';
 import {
   growthStep,
+  growthStepFromGrid,
+  voxelizeVertices,
   computeTips,
   recomputeNormals,
   KaandorpGrowthPipeline,
   GrowthConfig,
+  GrowthResult,
   DEFAULT_MAX_VERTICES,
   MAX_EDGE_LENGTH,
   CURVATURE_REFINE_THRESHOLD,
   REFINE_JITTER,
 } from './coral-growth-compute';
+import {
+  getLaplacianSolver,
+  isGPUSolverAvailable,
+  GPU_JACOBI_ITERATIONS,
+  LaplacianSolver,
+} from './coral-laplacian-solver';
 
 // ── Data structures ────────────────────────────────────────────────────────
 
@@ -80,6 +89,10 @@ interface CoralGeometryData {
   stepsPerFrame: number;
   /** Total growth generation cap. */
   maxGenerations: number;
+  /** Field solver (GPU when the WebGPU device is present, else CPU). */
+  solver: LaplacianSolver;
+  /** True while an async GPU growth batch is in flight (avoids re-entry). */
+  growthBusy: boolean;
   /** Polyp-tip glow point cloud. */
   tipPoints: THREE.Points;
   tipAttr: THREE.BufferAttribute;
@@ -119,7 +132,10 @@ export const coralArchetype: CreatureArchetype = {
     const normals = new Float32Array(initPositions.length);
     recomputeNormals(initPositions, normals, initIndices, vertexCount, triangleCount);
 
-    const growthConfig = buildGrowthConfig(coralSpec, seedScale, initialRadius, seed);
+    // GPU field solve available? If so we run ~16× more, thinner growth steps
+    // on a 64³ grid (smooth accretive branching like the Houdini reference).
+    const gpu = isGPUSolverAvailable();
+    const growthConfig = buildGrowthConfig(coralSpec, seedScale, initialRadius, seed, gpu);
 
     const growthState: CoralGrowthState = {
       positions: new Float32Array(initPositions),
@@ -138,7 +154,10 @@ export const coralArchetype: CreatureArchetype = {
     runGrowthSteps(growthState, growthConfig, initialSteps);
 
     const stepsPerFrame = getStepsPerFrame(coralSpec);
-    const maxGenerations = coralSpec.growth.maxGenerations;
+    // Thin-step mode (GPU): ~16× the spec generations for smooth accretion.
+    const maxGenerations = gpu
+      ? Math.min(160, Math.max(16, coralSpec.growth.maxGenerations * 16))
+      : coralSpec.growth.maxGenerations;
 
     // ── Three.js BufferGeometry for the single body surface mesh ────────
     const meshGeometry = new THREE.BufferGeometry();
@@ -170,6 +189,8 @@ export const coralArchetype: CreatureArchetype = {
       uvAttr,
       stepsPerFrame,
       maxGenerations,
+      solver: getLaplacianSolver(),
+      growthBusy: false,
       tipPoints: undefined as unknown as THREE.Points,
       tipAttr: new THREE.BufferAttribute(tips.positions, 3),
       tipMaterial: undefined as unknown as THREE.PointsMaterial,
@@ -262,10 +283,11 @@ export const coralArchetype: CreatureArchetype = {
     gd.time = time;
 
     // 1. Continue emergent growth until the generation cap is reached.
-    if (state.generation < gd.maxGenerations) {
-      const didGrow = runGrowthSteps(state, gd.growthConfig, gd.stepsPerFrame);
-      syncGeometry(gd);
-      if (didGrow) refreshTips(gd);
+    //    The growth pump is async (GPU solve + readback), so kick it off once
+    //    per frame and let the `growthBusy` guard prevent re-entry.
+    if (state.generation < gd.maxGenerations && !gd.growthBusy) {
+      gd.growthBusy = true;
+      pumpGrowth(gd).finally(() => { gd.growthBusy = false; });
     }
 
     // 2. Gentle current-driven sway (bounded additive offset from neutral).
@@ -386,7 +408,13 @@ function getSeedScale(spec: CoralSpec): [number, number, number] {
 }
 
 /** Build the growth config for a spec, with generous but finite bounds. */
-function buildGrowthConfig(spec: CoralSpec, seedScale: [number, number, number], initialRadius: number, seed: number): GrowthConfig {
+function buildGrowthConfig(
+  spec: CoralSpec,
+  seedScale: [number, number, number],
+  initialRadius: number,
+  seed: number,
+  gpu: boolean,
+): GrowthConfig {
   const gx = initialRadius * seedScale[0];
   const gy = initialRadius * seedScale[1];
   const gz = initialRadius * seedScale[2];
@@ -416,16 +444,20 @@ function buildGrowthConfig(spec: CoralSpec, seedScale: [number, number, number],
       maxRadius = Math.max(gx, gz) + allow * 0.8;
   }
 
-  const gridSize = spec.resources.diffusionLength > 40 ? 48 : 40;
+  // GPU path solves on a 64³ grid (fine detail); CPU fallback stays coarse.
+  const gridSize = gpu ? 64 : (spec.resources.diffusionLength > 40 ? 48 : 40);
   const meshExtent = Math.max(maxRadius, maxHeight) + 2;
 
   const budget = Math.min(DEFAULT_MAX_VERTICES, Math.max(800, (spec.budget?.maxParticles ?? 4000) * 2));
+
+  // Thin-step mode (GPU): halve per-step thickness since we take ~16× more steps.
+  const thicknessScale = gpu ? 0.5 : 1;
 
   return {
     alpha: spec.resources.alpha,
     ambientLight: spec.resources.ambientLight,
     lightDir: [0, 1, 0],
-    maxThickness: Math.max(0.1, spec.morphology.branchThickness * 0.45),
+    maxThickness: Math.max(0.1, spec.morphology.branchThickness * 0.45) * thicknessScale,
     growthRate: Math.max(0.02, spec.resources.growthRate),
     phototropism: spec.growth.phototropism,
     bifurcationThreshold: spec.resources.bifurcationThreshold,
@@ -470,16 +502,60 @@ function runGrowthSteps(state: CoralGrowthState, config: GrowthConfig, n: number
   let advanced = false;
   for (let s = 0; s < n; s++) {
     const res = growthStep(state.positions, state.normals, state.indices, state.vertexCount, config);
-    state.positions = res.positions;
-    state.normals = res.normals;
-    state.indices = res.indices;
-    state.vertexCount = res.vertexCount;
-    state.triangleCount = res.triangleCount;
-    state.resource = res.resource;
-    state.generation++;
+    applyGrowthResult(state, res);
     advanced = true;
   }
   return advanced;
+}
+
+/**
+ * Async growth pump: runs `stepsPerFrame` accretive steps, each one
+ * voxelizing the current surface, solving the Laplacian field (GPU compute
+ * when available, else CPU), and displacing vertices from the solved field.
+ * Geometry/tips are re-synced once per batch. Returns the number of steps run.
+ */
+async function pumpGrowth(gd: CoralGeometryData): Promise<number> {
+  const state = gd.growthState;
+  const config = gd.growthConfig;
+  const solver = gd.solver;
+  const gs = config.gridSize;
+  const N = gs * gs * gs;
+
+  let stepsRun = 0;
+  for (let s = 0; s < gd.stepsPerFrame; s++) {
+    if (state.generation >= gd.maxGenerations) break;
+
+    let res: GrowthResult;
+    if (solver.isGPU) {
+      // Voxelize the current surface (thin crust, matching the CPU path).
+      const solid = new Uint8Array(N);
+      voxelizeVertices(state.positions, state.indices, state.vertexCount, solid, gs, config.boundsMin, config.boundsMax);
+      const field = await solver.solve(solid, gs, GPU_JACOBI_ITERATIONS);
+      res = growthStepFromGrid(state.positions, state.normals, state.indices, state.vertexCount, config, field);
+    } else {
+      res = growthStep(state.positions, state.normals, state.indices, state.vertexCount, config);
+    }
+
+    applyGrowthResult(state, res);
+    stepsRun++;
+  }
+
+  if (stepsRun > 0) {
+    syncGeometry(gd);
+    refreshTips(gd);
+  }
+  return stepsRun;
+}
+
+/** Copy a growth-step result back into the growth state (reassigning arrays). */
+function applyGrowthResult(state: CoralGrowthState, res: GrowthResult): void {
+  state.positions = res.positions;
+  state.normals = res.normals;
+  state.indices = res.indices;
+  state.vertexCount = res.vertexCount;
+  state.triangleCount = res.triangleCount;
+  state.resource = res.resource;
+  state.generation++;
 }
 
 

@@ -44,6 +44,13 @@ export const CURVATURE_REFINE_THRESHOLD = 1.6;
 export const REFINE_JITTER = 0.06;
 /** Default cap on live vertices before refinement is disabled (vertex budget). */
 export const DEFAULT_MAX_VERTICES = 24000;
+/**
+ * Distance (in voxel cells) ahead of the surface where the nutrient field is
+ * probed for growth. Mirrors Merks et al. (2003) App. A: the flux is sampled
+ * ~3 length units along the surface normal, which is what couples the solved
+ * field back into deposition and produces the branching instability.
+ */
+export const FIELD_PROBE_CELLS = 2.0;
 
 // ── Seeded RNG (reproducible organic noise) ───────────────────────────────
 
@@ -206,6 +213,52 @@ export function voxelizeVertices(
 }
 
 /**
+ * Trilinear sample of a solved 3D scalar field at a world-space point.
+ * Points outside the voxel domain are clamped to the nearest boundary cell
+ * (safe, finite, and consistent with the domain's Neumann walls).
+ */
+export function sampleGrid3D(
+  grid: Float32Array,
+  gs: number,
+  boundsMin: [number, number, number],
+  boundsMax: [number, number, number],
+  x: number, y: number, z: number,
+): number {
+  const rangeX = boundsMax[0] - boundsMin[0] || 1e-6;
+  const rangeY = boundsMax[1] - boundsMin[1] || 1e-6;
+  const rangeZ = boundsMax[2] - boundsMin[2] || 1e-6;
+
+  let gx = ((x - boundsMin[0]) / rangeX) * (gs - 1);
+  let gy = ((y - boundsMin[1]) / rangeY) * (gs - 1);
+  let gz = ((z - boundsMin[2]) / rangeZ) * (gs - 1);
+  gx = Math.max(0, Math.min(gs - 1, gx));
+  gy = Math.max(0, Math.min(gs - 1, gy));
+  gz = Math.max(0, Math.min(gs - 1, gz));
+
+  const x0 = Math.floor(gx), y0 = Math.floor(gy), z0 = Math.floor(gz);
+  const x1 = Math.min(gs - 1, x0 + 1), y1 = Math.min(gs - 1, y0 + 1), z1 = Math.min(gs - 1, z0 + 1);
+  const fx = gx - x0, fy = gy - y0, fz = gz - z0;
+
+  const gs2 = gs * gs;
+  const i000 = x0 + y0 * gs + z0 * gs2;
+  const i100 = x1 + y0 * gs + z0 * gs2;
+  const i010 = x0 + y1 * gs + z0 * gs2;
+  const i110 = x1 + y1 * gs + z0 * gs2;
+  const i001 = x0 + y0 * gs + z1 * gs2;
+  const i101 = x1 + y0 * gs + z1 * gs2;
+  const i011 = x0 + y1 * gs + z1 * gs2;
+  const i111 = x1 + y1 * gs + z1 * gs2;
+
+  const c00 = grid[i000] * (1 - fx) + grid[i100] * fx;
+  const c10 = grid[i010] * (1 - fx) + grid[i110] * fx;
+  const c01 = grid[i001] * (1 - fx) + grid[i101] * fx;
+  const c11 = grid[i011] * (1 - fx) + grid[i111] * fx;
+  const c0 = c00 * (1 - fy) + c10 * fy;
+  const c1 = c01 * (1 - fy) + c11 * fy;
+  return c0 * (1 - fz) + c1 * fz;
+}
+
+/**
  * Morphology-aware growth-axis bias for a vertex. This is what makes each
  * preset read as a DISTINCT form even though branching itself stays emergent.
  */
@@ -233,7 +286,9 @@ function axisBias(
   }
 }
 
-/** Single growth step: resource → direction → displacement → refine → normals. */
+/** Single growth step: resource → direction → displacement → refine → normals.
+ *  CPU path: voxelize + Jacobi solve, then displace from the solved field.
+ */
 export function growthStep(
   positions: Float32Array,
   normals: Float32Array,
@@ -256,9 +311,32 @@ export function growthStep(
   }
   solveLaplacian(grid, solid, gs, JACOBI_ITERATIONS);
 
+  return growthStepFromGrid(positions, normals, indices, vertexCount, config, grid);
+}
+
+/**
+ * Single growth step driven by an ALREADY-solved Laplacian field (GPU path).
+ * cNutr is sampled at a Merks-style probe ~FIELD_PROBE_CELLS voxels ahead of
+ * the surface along the outward normal: protrusions reaching into
+ * high-concentration regions read higher cNutr and grow faster, which is the
+ * Mullins-Sekerka instability that turns a blob into branched coral.
+ */
+export function growthStepFromGrid(
+  positions: Float32Array,
+  normals: Float32Array,
+  indices: Uint32Array,
+  vertexCount: number,
+  config: GrowthConfig,
+  grid: Float32Array,
+): GrowthResult {
+  const gs = config.gridSize;
+
+  // Voxel world size per axis (for probe distance scaling).
+  const cellX = (config.boundsMax[0] - config.boundsMin[0]) / gs || 1e-6;
+  const cellY = (config.boundsMax[1] - config.boundsMin[1]) / gs || 1e-6;
+  const cellZ = (config.boundsMax[2] - config.boundsMin[2]) / gs || 1e-6;
+
   const axis = config.growthAxis;
-  const diffusion = config.diffusionLength > 1 ? config.diffusionLength : 1;
-  const compact = config.compactness;
   const alpha = config.alpha;
   const ambient = config.ambientLight;
   const photo = config.phototropism;
@@ -277,14 +355,18 @@ export function growthStep(
     const px = positions[i3], py = positions[i3 + 1], pz = positions[i3 + 2];
     const nx = normals[i3], ny = normals[i3 + 1], nz = normals[i3 + 2];
 
-    const radial = Math.hypot(px, pz);
     const height = py;
 
-    // ── Nutrient (Kaandorp): decays with effective transport distance.
-    //    Compact colonies feel a stronger distance penalty (dense dome),
-    //    open lacy ones keep feeding thin tips (long diffusionLength).
-    const effDist = height + radial * (0.35 + compact * 0.65);
-    const cNutr = Math.exp(-effDist / diffusion);
+    // ── Nutrient (Merks 2003 App. A): probe the solved field ahead of the
+    //    surface along the outward normal. Solid/sheltered vertices read ~0
+    //    (absorbing boundary) and stall; exposed tips read high and grow.
+    const probeDist = FIELD_PROBE_CELLS;
+    const cNutr = sampleGrid3D(
+      grid, gs, config.boundsMin, config.boundsMax,
+      px + nx * probeDist * cellX,
+      py + ny * probeDist * cellY,
+      pz + nz * probeDist * cellZ,
+    );
 
     // ── Light exposure (phototropic). Higher, up-facing tips win.
     const upDot = Math.max(0, ny);                           // towards (0,1,0)
