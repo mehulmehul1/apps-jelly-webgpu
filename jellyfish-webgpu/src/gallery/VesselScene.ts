@@ -9,8 +9,10 @@
  *   - camera tweens between grid view and hero (selected tile) view
  *   - raycast tile selection
  *
- * Tiles are STATIC (no physics tick) — the initial particle layout already
- * IS the profile silhouette, which is exactly what a mold gallery should show.
+ * Tiles are STATIC by default (no physics tick) — the initial particle layout
+ * already IS the profile silhouette, which is exactly what a mold gallery
+ * should show. The float toggle ports the viewer's Particulate pulse
+ * (JellyfishArchetype.animateBody) so every tile breathes at once.
  */
 
 import * as THREE from 'three/webgpu';
@@ -20,6 +22,8 @@ import {
   BulbNodeMaterial,
   GelNodeMaterial,
   InterpolatedLineMaterial,
+  TailNodeMaterial,
+  TentacleNodeMaterial,
 } from '../jellyfish/materials';
 import type { JellyfishSpec } from '../jellyfish/creatures';
 
@@ -54,6 +58,17 @@ export class VesselScene {
 
   private tiles: GalleryTile[] = [];
   private tileLookup = new Map<string, GalleryTile>();
+
+  // Motion state — ALL motion OFF by default (rest/no-motion view).
+  // Float (Particulate sine breathing) and axis rotation are opt-in via
+  // the pane: turn either on to see motion, off to return to rest.
+  private floatEnabled = false;
+  private floatTime = 0;
+  private floatSettle = 0; // seconds remaining to relax back to rest after disable
+  private floatPulseSpeed = 0.175;  // viewer default 0.5 scaled by gentle 0.35×
+  private floatAmplitude = 0.15;    // viewer: animationState.pulseAmplitude
+  private rotateEnabled = false;
+  private rotateSpeed = 0.08;  // rad/s — gentle axis rotation (~80s/rev)
 
   // Orbit state
   private view: GalleryView = {
@@ -222,6 +237,108 @@ export class VesselScene {
     }
 
     group.scale.setScalar(1);
+
+    // ── Tail mesh ──────────────────────────────────────────
+    if (gd.faces.tail.length > 0) {
+      const tailGeo = new THREE.BufferGeometry();
+      tailGeo.setAttribute('position', gd.position);
+      tailGeo.setAttribute('positionPrev', gd.positionPrev);
+      tailGeo.setAttribute('uv', new THREE.BufferAttribute(gd.uvs, 2));
+      tailGeo.setAttribute('normal', gd.geometry.attributes.normal);
+      tailGeo.setIndex(gd.faces.tail);
+      tailGeo.computeVertexNormals();
+
+      const tailMaterial = new TailNodeMaterial();
+      tailMaterial.setDiffuse(0xE4BBEE);
+      tailMaterial.setDiffuseB(0x241138);
+      tailMaterial.updateOpacity(0.75);
+
+      const tailMesh = new THREE.Mesh(tailGeo, tailMaterial);
+      tailMesh.scale.setScalar(0.95 * s);
+      group.add(tailMesh);
+    }
+
+    // ── Mouth mesh ────────────────────────────────────────
+    if (gd.faces.mouth.length > 0) {
+      const mouthGeo = new THREE.BufferGeometry();
+      mouthGeo.setAttribute('position', gd.position);
+      mouthGeo.setAttribute('positionPrev', gd.positionPrev);
+      mouthGeo.setAttribute('uv', new THREE.BufferAttribute(gd.uvs, 2));
+      mouthGeo.setAttribute('normal', gd.geometry.attributes.normal);
+      mouthGeo.setIndex(gd.faces.mouth);
+      mouthGeo.computeVertexNormals();
+
+      const mouthMaterial = new TailNodeMaterial();
+      mouthMaterial.setDiffuse(0xEFA6F0);
+      mouthMaterial.setDiffuseB(0x4A67CE);
+      mouthMaterial.setScale(3);
+      mouthMaterial.updateOpacity(0.65);
+
+      const mouthMesh = new THREE.Mesh(mouthGeo, mouthMaterial);
+      group.add(mouthMesh);
+    }
+
+    // ── Tentacle meshes ───────────────────────────────────
+    const tentacleStyle = (gd.spec as JellyfishSpec).tentacleStyle ?? 'curtain';
+    const tentacleMaterial = new TentacleNodeMaterial({
+      color: 0x997299,
+      transparent: true,
+      opacity: 0.25,
+      depthTest: true,
+      depthWrite: false,
+      useGlow: tentacleStyle !== 'tube',
+    });
+    tentacleMaterial.setArea(2000);
+    const tubeTentacleMaterial =
+      tentacleStyle === 'tube'
+        ? new TentacleNodeMaterial({
+            color: 0x997299,
+            transparent: true,
+            opacity: 0.25,
+            depthTest: true,
+            depthWrite: false,
+            useGlow: false,
+          })
+        : tentacleMaterial;
+
+    if (tentacleStyle === 'tube' && gd.faces.tentacleGroups.length > 0) {
+      for (const groupFaces of gd.faces.tentacleGroups) {
+        if (groupFaces.length === 0) continue;
+        const tentGeo = new THREE.BufferGeometry();
+        tentGeo.setAttribute('position', gd.position);
+        tentGeo.setAttribute('positionPrev', gd.positionPrev);
+        tentGeo.setAttribute('uv', new THREE.BufferAttribute(gd.uvs, 2));
+        tentGeo.setIndex(groupFaces);
+        tentGeo.computeVertexNormals();
+        group.add(new THREE.Mesh(tentGeo, tubeTentacleMaterial));
+      }
+    } else if (gd.faces.tentacles.length > 0) {
+      const tentGeo = new THREE.BufferGeometry();
+      tentGeo.setAttribute('position', gd.position);
+      tentGeo.setAttribute('positionPrev', gd.positionPrev);
+      tentGeo.setAttribute('uv', new THREE.BufferAttribute(gd.uvs, 2));
+      tentGeo.setIndex(gd.faces.tentacles);
+      tentGeo.computeVertexNormals();
+      group.add(new THREE.Mesh(tentGeo, tentacleMaterial));
+    }
+
+    // ── Inner structural lines ────────────────────────────
+    if (gd.links.linesInner.length > 0) {
+      const liGeo = new THREE.BufferGeometry();
+      liGeo.setAttribute('position', gd.position);
+      liGeo.setAttribute('positionPrev', gd.positionPrev);
+      liGeo.setIndex(gd.links.linesInner);
+      const liMat = new InterpolatedLineMaterial({
+        color: 0xf99ebd,
+        transparent: true,
+        opacity: 0.06,
+        blending: THREE.AdditiveBlending,
+        depthTest: false,
+        depthWrite: false,
+      });
+      group.add(new THREE.LineSegments(liGeo, liMat));
+    }
+
     return group;
   }
 
@@ -302,7 +419,102 @@ export class VesselScene {
     this.camera.position.set(cx, cy, cz);
     this.camera.lookAt(this.view.target);
 
+    if (this.rotateEnabled) {
+      // Gentle axis rotation — independent of the pulse, ON by default.
+      const rot = this.rotateSpeed * dt;
+      for (const tile of this.tiles) tile.group.rotation.y += rot;
+    }
+
+    if (this.floatEnabled) {
+      this.pulseTiles(dt);
+    } else if (this.floatSettle > 0) {
+      // Relax back to rest shape after float is switched off.
+      this.floatSettle = Math.max(0, this.floatSettle - dt);
+      this.applyExpansion(1.0, dt);
+    }
+
     this.renderer.render(this.scene, this.camera);
+  }
+
+  /**
+   * Toggle the viewer's Particulate pulse on all tiles at once.
+   * Port of JellyfishArchetype.animateBody: scale each rib's rest distance
+   * sinusoidally, then tick the particle system so the soft body breathes.
+   * On disable, tiles settle back to their rest shape over ~1s instead of
+   * freezing mid-pulse.
+   */
+  setFloatEnabled(enabled: boolean): void {
+    if (enabled === this.floatEnabled) return;
+    this.floatEnabled = enabled;
+    this.floatTime = 0;
+    if (!enabled) this.floatSettle = 1.0;
+  }
+
+  /** Pulse speed in cycles/sec (viewer default 0.5). Slowest ~0.005 = 400s cycle. */
+  setFloatSpeed(speed: number): void {
+    this.floatPulseSpeed = Math.max(0.005, Math.min(4, speed));
+  }
+
+  /** Pulse amplitude as a fraction of rest length (viewer default 0.15). */
+  setFloatAmplitude(amp: number): void {
+    this.floatAmplitude = Math.max(0, Math.min(0.6, amp));
+  }
+
+  /** Spin every tile on its own vertical axis. */
+  setRotateEnabled(enabled: boolean): void {
+    this.rotateEnabled = enabled;
+  }
+
+  /** Per-tile spin rate in rad/s (default 0.08 ≈ 80s/rev). */
+  setRotateSpeed(radPerSec: number): void {
+    this.rotateSpeed = Math.max(0.005, Math.min(4, radPerSec));
+  }
+
+  private pulseTiles(dt: number): void {
+    this.floatTime += dt * this.floatPulseSpeed;
+    const phase = (Math.sin(this.floatTime * Math.PI - Math.PI * 0.5) + 1) * 0.5;
+    const expansion = 1.0 + phase * this.floatAmplitude;
+    this.applyExpansion(expansion, dt);
+  }
+
+  /** Scale every rib's rest distance by `expansion`, then step the particle system. */
+  private applyExpansion(expansion: number, dt: number): void {
+    for (const tile of this.tiles) {
+      const gd = tile.geometryData;
+
+      // Pulse bell ribs
+      for (const rib of gd.ribs) {
+        if (!rib.initialDistances) continue;
+        if (rib.outer && rib.initialDistances.outer) {
+          rib.outer.setDistance(
+            rib.initialDistances.outer[0] * expansion,
+            rib.initialDistances.outer[1] * expansion,
+          );
+        }
+        if (rib.inner && rib.initialDistances.inner) {
+          rib.inner.setDistance(
+            rib.initialDistances.inner[0] * expansion,
+            rib.initialDistances.inner[1] * expansion,
+          );
+        }
+      }
+
+      // Pulse tail ribs for secondary motion
+      for (const rib of gd.tailRibs) {
+        if (!rib.initialDistances) continue;
+        if (rib.outer && rib.initialDistances.outer) {
+          rib.outer.setDistance(
+            rib.initialDistances.outer[0] * expansion,
+            rib.initialDistances.outer[1] * expansion,
+          );
+        }
+      }
+
+      // Tick Particulate physics, then upload the deformed positions
+      gd.system.tick(dt);
+      gd.position.needsUpdate = true;
+      gd.positionPrev.needsUpdate = true;
+    }
   }
 
   // ── Input ─────────────────────────────────────────────────────────────
@@ -336,8 +548,8 @@ export class VesselScene {
     this.lastPointer = { x: ev.clientX, y: ev.clientY };
 
     // Dragging orbits (azimuth + elevation), even in hero view.
-    this.targetView.azimuth -= dx * 0.005;
-    this.targetView.elevation += dy * 0.005;
+    this.targetView.azimuth -= dx * 0.0025;
+    this.targetView.elevation += dy * 0.0025;
   };
 
   private onPointerUp = (ev: PointerEvent): void => {
